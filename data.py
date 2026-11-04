@@ -1,0 +1,30 @@
+"""Module de données : tout ce qui va chercher des cours sur Internet.
+
+Ce fichier est utilisé à la fois par l'interface (app.py) et par le vérificateur
+d'alertes (verificateur.py). Il ne dépend pas de Streamlit.
+"""
+
+import yfinance as yf
+
+
+def recuperer_cours(ticker, periode="1mo", intervalle="1d"):
+    """Renvoie le tableau des cours d'une action (une ligne par point)."""
+    return yf.Ticker(ticker).history(period=periode, interval=intervalle)
+
+
+def dernier_prix(ticker):
+    """Renvoie le dernier cours connu (différé d'environ 15 min), ou None si indisponible.
+
+    On essaie d'abord les points de 5 minutes du jour, puis, si la bourse est
+    fermée ou si rien ne vient, les clôtures des derniers jours.
+    """
+    for periode, intervalle in (("1d", "5m"), ("5d", "1d")):
+        cours = recuperer_cours(ticker, periode, intervalle)
+        if not cours.empty:
+            return float(cours["Close"].iloc[-1])
+    return None
+
+
+def devise(ticker):
+    """Les actions de Paris finissent par .PA et sont en euros, les autres en dollars."""
+    return "€" if ticker.endswith(".PA") else "$"
