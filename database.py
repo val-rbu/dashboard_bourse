@@ -5,7 +5,9 @@ Les données restent donc là même quand on ferme l'application.
 
 Types d'alertes :
 - "prix"           : le cours dépasse (hausse) ou passe sous (baisse) un seuil en devise ;
-- "variation_jour" : le cours varie d'au moins X % sur la journée (seuil = X, positif).
+- "variation_jour" : le cours varie d'au moins X % sur la journée (seuil = X, positif) ;
+- "rsi"            : le RSI dépasse (hausse) ou passe sous (baisse) un seuil entre 0 et 100 ;
+- "croisement_ma"  : la MA50 croise la MA200 (hausse = vers le haut, baisse = vers le bas ; seuil inutilisé, 0).
 """
 
 import sqlite3

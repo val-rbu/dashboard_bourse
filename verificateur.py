@@ -1,8 +1,10 @@
 """Vérificateur d'alertes : compare les cours actuels aux seuils des alertes actives.
 
-Deux types d'alertes sont gérés :
+Quatre types d'alertes sont gérés :
 - « prix » : le cours dépasse ou passe sous un seuil ;
-- « variation_jour » : le cours varie d'au moins X % par rapport à la clôture précédente.
+- « variation_jour » : le cours varie d'au moins X % par rapport à la clôture précédente ;
+- « rsi » : le RSI 14 jours dépasse ou passe sous un seuil (70 = surchauffe, 30 = survente) ;
+- « croisement_ma » : la moyenne mobile 50 jours croise la moyenne mobile 200 jours.
 
 Deux façons de l'utiliser, dans le terminal :
     python verificateur.py             -> une vérification, puis le script s'arrête
@@ -15,7 +17,8 @@ import sys
 import time
 
 import database as db
-from data import dernier_prix, devise, variation_jour
+import indicateurs as ind
+from data import clotures_5ans, dernier_prix, devise, variation_jour
 from notifications import envoyer_message, expliquer_erreur, telegram_configure
 
 INTERVALLE_SECONDES = 5 * 60   # temps d'attente entre deux vérifications en mode boucle
@@ -25,6 +28,10 @@ def libelle_condition(alerte):
     """Condition d'une alerte en texte court : « ≥ 390.00 $ » ou « variation du jour ≤ −5.0 % »."""
     hausse = alerte["sens"] == "hausse"
     signe = "≥" if hausse else "≤"
+    if alerte["type"] == "croisement_ma":
+        return "MA50 passe au-dessus de la MA200" if hausse else "MA50 passe sous la MA200"
+    if alerte["type"] == "rsi":
+        return f"RSI {signe} {alerte['seuil']:.0f}"
     if alerte["type"] == "variation_jour":
         return f"variation du jour {signe} {'+' if hausse else '−'}{alerte['seuil']:.1f} %"
     return f"{signe} {alerte['seuil']:.2f} {devise(alerte['ticker'])}"
@@ -36,6 +43,26 @@ def mesurer(alerte, memoire):
     `memoire` évite de demander deux fois la même chose pour la même action.
     """
     ticker = alerte["ticker"]
+
+    if alerte["type"] in ("rsi", "croisement_ma"):
+        cle = ("serie", ticker)
+        if cle not in memoire:
+            memoire[cle] = clotures_5ans(ticker)
+        serie = memoire[cle]
+        if serie is None or serie.empty:
+            return None
+        mesure = {"cours": float(serie.iloc[-1]), "variation": None, "rsi": None, "croisement": None}
+        if alerte["type"] == "rsi":
+            valeur_rsi = ind.rsi(serie, 14).iloc[-1]
+            if valeur_rsi != valeur_rsi:   # NaN : pas assez d'historique
+                return None
+            mesure["rsi"] = float(valeur_rsi)
+        else:
+            if len(serie) < 205:           # il faut 200 jours pour la MA200, plus quelques jours
+                return None
+            mesure["croisement"] = ind.croisement_recent(serie, 5)
+        return mesure
+
     if alerte["type"] == "variation_jour":
         cle = ("variation", ticker)
         if cle not in memoire:
@@ -57,6 +84,10 @@ def mesurer(alerte, memoire):
 def condition_remplie(alerte, mesure):
     """Vrai si la mesure franchit le seuil de l'alerte, dans le bon sens."""
     hausse = alerte["sens"] == "hausse"
+    if alerte["type"] == "croisement_ma":
+        return mesure["croisement"] == alerte["sens"]
+    if alerte["type"] == "rsi":
+        return mesure["rsi"] >= alerte["seuil"] if hausse else mesure["rsi"] <= alerte["seuil"]
     if alerte["type"] == "variation_jour":
         variation = mesure["variation"]
         return variation >= alerte["seuil"] if hausse else variation <= -alerte["seuil"]
@@ -68,6 +99,10 @@ def decrire(alerte, mesure):
     """Phrase lisible décrivant une alerte déclenchée."""
     ticker = alerte["ticker"]
     d = devise(ticker)
+    if alerte["type"] == "croisement_ma":
+        return f"{ticker} : {libelle_condition(alerte)} (croisement des 5 dernières séances, cours {mesure['cours']:.2f} {d})"
+    if alerte["type"] == "rsi":
+        return f"{ticker} : {libelle_condition(alerte)} atteint (RSI actuel {mesure['rsi']:.0f}, cours {mesure['cours']:.2f} {d})"
     if alerte["type"] == "variation_jour":
         return (
             f"{ticker} : {libelle_condition(alerte)} atteinte "

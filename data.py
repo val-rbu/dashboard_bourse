@@ -39,6 +39,11 @@ def variation_jour(ticker):
     return dernier, (dernier - precedent) / precedent * 100
 
 
+def clotures_5ans(ticker):
+    """Clôtures journalières des 5 dernières années (série vide si indisponible)."""
+    return recuperer_cours(ticker, "5y", "1d")["Close"].dropna()
+
+
 def devise(ticker):
     """Les actions de Paris finissent par .PA et sont en euros, les autres en dollars."""
     return "€" if ticker.endswith(".PA") else "$"

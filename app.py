@@ -1,4 +1,4 @@
-"""Étape 7b : tableau de bord financier avec indicateurs, alertes, comparaison et portefeuille.
+"""Étape 8a : tableau de bord financier avec indicateurs, alertes (prix, %, RSI, croisement), comparaison et portefeuille.
 
 Pour lancer l'application, dans le terminal :
     streamlit run app.py
@@ -25,7 +25,7 @@ import portefeuille
 from data import devise
 from data import recuperer_cours as _recuperer_cours
 from notifications import telegram_configure
-from verificateur import decrire, libelle_condition, verifier_alertes
+from verificateur import condition_remplie, decrire, libelle_condition, mesurer, verifier_alertes
 
 # ---------------------------------------------------------------
 # Réglages de la page
@@ -453,9 +453,24 @@ col_form, col_actives = st.columns(2)
 with col_form:
     st.subheader(f"Nouvelle alerte sur {choix}")
 
-    type_choisi = st.radio("Type d'alerte", ["Prix", "Variation du jour (%)"], horizontal=True)
+    type_choisi = st.radio(
+        "Type d'alerte", ["Prix", "Variation du jour (%)", "RSI", "Croisement MA50/MA200"], horizontal=True
+    )
 
-    if type_choisi == "Prix":
+    if type_choisi == "RSI":
+        type_alerte = "rsi"
+        sens_choisi = st.radio("Prévenez-moi quand l'action est", ["en surchauffe (RSI au-dessus de)", "en survente (RSI en dessous de)"])
+        sens = "hausse" if sens_choisi.startswith("en surchauffe") else "baisse"
+        seuil = st.number_input(
+            "Seuil du RSI", min_value=1.0, max_value=99.0, value=70.0 if sens == "hausse" else 30.0, step=1.0, format="%.0f"
+        )
+    elif type_choisi == "Croisement MA50/MA200":
+        type_alerte = "croisement_ma"
+        sens_choisi = st.radio("Prévenez-moi quand", ["la MA50 passe au-dessus de la MA200", "la MA50 passe sous la MA200"])
+        sens = "hausse" if "au-dessus" in sens_choisi else "baisse"
+        seuil = 0.0
+        st.caption("Alerte envoyée si le croisement a eu lieu pendant les 5 dernières séances.")
+    elif type_choisi == "Prix":
         type_alerte = "prix"
         sens_choisi = st.radio("Prévenez-moi quand le cours est", ["au-dessus de", "en dessous de"], horizontal=True)
         sens = "hausse" if sens_choisi == "au-dessus de" else "baisse"
@@ -475,6 +490,10 @@ with col_form:
         # On prévient si la condition est déjà vraie : l'alerte partira à la prochaine vérification
         if type_alerte == "prix":
             deja_franchi = (dernier >= seuil) if sens == "hausse" else (dernier <= seuil)
+        elif type_alerte in ("rsi", "croisement_ma"):
+            nouvelle = {"ticker": choix, "type": type_alerte, "sens": sens, "seuil": float(seuil)}
+            mesure_actuelle = mesurer(nouvelle, {})
+            deja_franchi = mesure_actuelle is not None and condition_remplie(nouvelle, mesure_actuelle)
         else:
             resume = resume_du_jour(choix)
             variation_actuelle = resume[1] if resume else None

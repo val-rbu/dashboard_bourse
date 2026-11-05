@@ -46,3 +46,26 @@ def interpreter_rsi(valeur):
     if valeur > 70:
         return "surchauffe (plus de 70)"
     return "zone neutre (entre 30 et 70)"
+
+
+def croisement_recent(cloture, jours=5):
+    """Cherche un croisement MA50 / MA200 pendant les `jours` dernières séances.
+
+    Renvoie :
+    - "hausse" : la MA50 est passée au-dessus de la MA200 (« croisement doré », signal haussier) ;
+    - "baisse" : la MA50 est passée sous la MA200 (« croisement de la mort », signal baissier) ;
+    - None     : pas de croisement récent (ou pas assez d'historique).
+    Si les deux se sont produits, c'est le plus récent qui compte.
+    """
+    ecart = (moyenne_mobile(cloture, 50) - moyenne_mobile(cloture, 200)).dropna()
+    if len(ecart) < jours + 1:
+        return None
+    veille = ecart.shift(1)
+    monte = (veille <= 0) & (ecart > 0)
+    descend = (veille >= 0) & (ecart < 0)
+    for date in reversed(ecart.index[-jours:]):
+        if monte[date]:
+            return "hausse"
+        if descend[date]:
+            return "baisse"
+    return None
