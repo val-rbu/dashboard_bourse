@@ -1,4 +1,4 @@
-"""Étape 3 : tableau de bord financier avec liste de suivi sauvegardée et alertes à seuil.
+"""Étape 6 : tableau de bord financier avec indicateurs techniques et alertes en pourcentage.
 
 Pour lancer l'application, dans le terminal :
     streamlit run app.py
@@ -6,25 +6,29 @@ Pour lancer l'application, dans le terminal :
 Fichiers du projet :
     app.py          l'interface (ce fichier)
     data.py         récupération des cours
+    indicateurs.py  moyennes mobiles et RSI
     database.py     base SQLite (liste de suivi, alertes, historique)
     verificateur.py vérification des alertes
+    notifications.py envoi des messages Telegram
 """
 
 import streamlit as st
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 import database as db
+import indicateurs as ind
 from data import devise
 from data import recuperer_cours as _recuperer_cours
 from notifications import telegram_configure
-from verificateur import verifier_alertes, decrire
+from verificateur import decrire, libelle_condition, verifier_alertes
 
 # ---------------------------------------------------------------
 # Réglages de la page
 # ---------------------------------------------------------------
 st.set_page_config(page_title="Tableau de bord financier", layout="wide")
 
-# Crée la base de données au premier lancement (ne fait rien si elle existe déjà)
+# Crée la base de données au premier lancement et la met à jour si besoin
 db.initialiser()
 
 # Pour chaque bouton de période : (durée à récupérer, intervalle entre deux points)
@@ -34,6 +38,11 @@ PERIODES = {
     "1A": ("1y", "1d"),
     "5A": ("5y", "1wk"),
 }
+
+# Couleurs des courbes d'indicateurs
+COULEUR_MA50 = "#F59E0B"
+COULEUR_MA200 = "#A78BFA"
+COULEUR_RSI = "#2DD4BF"
 
 
 # ---------------------------------------------------------------
@@ -127,6 +136,23 @@ with col_periode:
 with col_type:
     type_graphique = st.radio("Type de graphique", ["Courbe", "Chandeliers"], horizontal=True)
 
+# Les indicateurs sont calculés sur des clôtures journalières : pas disponibles pour 1J
+indicateurs_disponibles = periode_choisie != "1J"
+col_ma50, col_ma200, col_rsi = st.columns(3)
+with col_ma50:
+    veut_ma50 = st.checkbox("Moyenne mobile 50 jours", disabled=not indicateurs_disponibles)
+with col_ma200:
+    veut_ma200 = st.checkbox("Moyenne mobile 200 jours", disabled=not indicateurs_disponibles)
+with col_rsi:
+    veut_rsi = st.checkbox("RSI (14 jours)", disabled=not indicateurs_disponibles)
+if not indicateurs_disponibles:
+    st.caption("Les indicateurs utilisent des clôtures journalières : choisis une période de 1M ou plus.")
+
+# Une case grisée peut rester cochée : on ne tient compte que des cases actives
+afficher_ma50 = veut_ma50 and indicateurs_disponibles
+afficher_ma200 = veut_ma200 and indicateurs_disponibles
+afficher_rsi = veut_rsi and indicateurs_disponibles
+
 periode, intervalle = PERIODES[periode_choisie]
 cours = recuperer_cours(choix, periode, intervalle)
 
@@ -147,11 +173,44 @@ c3.metric("Plus bas", f"{cours['Low'].min():.2f} {symbole}")
 c4.metric("Volume cumulé", f"{cours['Volume'].sum() / 1e6:.1f} M")
 
 # ---------------------------------------------------------------
+# Calcul des indicateurs
+# ---------------------------------------------------------------
+# Une moyenne sur 200 jours a besoin de 200 jours d'historique AVANT la première date
+# affichée. On calcule donc les indicateurs sur 5 ans de clôtures journalières, puis on
+# ne garde que la partie visible sur le graphique.
+serie_ma50 = serie_ma200 = serie_rsi = None
+if afficher_ma50 or afficher_ma200 or afficher_rsi:
+    historique = recuperer_cours(choix, "5y", "1d")["Close"].dropna()
+    if historique.empty:
+        st.warning("Historique indisponible : les indicateurs ne peuvent pas être calculés.")
+        afficher_ma50 = afficher_ma200 = afficher_rsi = False
+    else:
+        debut_affichage = cours.index[0]
+
+        def partie_visible(serie):
+            serie = serie[serie.index >= debut_affichage].dropna()
+            return serie
+
+        if afficher_ma50:
+            serie_ma50 = partie_visible(ind.moyenne_mobile(historique, 50))
+        if afficher_ma200:
+            serie_ma200 = partie_visible(ind.moyenne_mobile(historique, 200))
+        if afficher_rsi:
+            serie_rsi = partie_visible(ind.rsi(historique, 14))
+
+# ---------------------------------------------------------------
 # Le graphique
 # ---------------------------------------------------------------
-fig = go.Figure()
+avec_rsi = serie_rsi is not None and not serie_rsi.empty
+
+if avec_rsi:
+    # Deux zones superposées : le cours en haut, le RSI en bas
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.04, row_heights=[0.72, 0.28])
+else:
+    fig = make_subplots(rows=1, cols=1)
+
 if type_graphique == "Courbe":
-    fig.add_trace(go.Scatter(x=cours.index, y=cours["Close"], mode="lines", name="Cours"))
+    fig.add_trace(go.Scatter(x=cours.index, y=cours["Close"], mode="lines", name="Cours"), row=1, col=1)
 else:
     fig.add_trace(
         go.Candlestick(
@@ -161,29 +220,63 @@ else:
             low=cours["Low"],
             close=cours["Close"],
             name="Cours",
-        )
+        ),
+        row=1,
+        col=1,
     )
 
-# Une ligne pointillée jaune pour chaque alerte active sur cette action
-for alerte in db.lister_alertes(choix):
-    signe = "≥" if alerte["sens"] == "hausse" else "≤"
-    fig.add_hline(
-        y=alerte["seuil"],
-        line_dash="dash",
-        line_color="#FBBF24",
-        annotation_text=f"Alerte {signe} {alerte['seuil']:.2f}",
-        annotation_position="top left",
+if serie_ma50 is not None and not serie_ma50.empty:
+    fig.add_trace(
+        go.Scatter(x=serie_ma50.index, y=serie_ma50, mode="lines", name="MA50", line=dict(color=COULEUR_MA50, width=1.6)),
+        row=1,
+        col=1,
     )
+if serie_ma200 is not None and not serie_ma200.empty:
+    fig.add_trace(
+        go.Scatter(x=serie_ma200.index, y=serie_ma200, mode="lines", name="MA200", line=dict(color=COULEUR_MA200, width=1.6)),
+        row=1,
+        col=1,
+    )
+
+if avec_rsi:
+    fig.add_trace(
+        go.Scatter(x=serie_rsi.index, y=serie_rsi, mode="lines", name="RSI", line=dict(color=COULEUR_RSI, width=1.6)),
+        row=2,
+        col=1,
+    )
+    fig.add_hline(y=70, line_dash="dot", line_color="#9FB0CC", row=2, col=1)
+    fig.add_hline(y=30, line_dash="dot", line_color="#9FB0CC", row=2, col=1)
+    fig.update_yaxes(range=[0, 100], title_text="RSI", row=2, col=1)
+
+# Une ligne pointillée jaune pour chaque alerte de prix active sur cette action
+for alerte in db.lister_alertes(choix):
+    if alerte["type"] == "prix":
+        signe = "≥" if alerte["sens"] == "hausse" else "≤"
+        fig.add_hline(
+            y=alerte["seuil"],
+            line_dash="dash",
+            line_color="#FBBF24",
+            annotation_text=f"Alerte {signe} {alerte['seuil']:.2f}",
+            annotation_position="top left",
+            row=1,
+            col=1,
+        )
 
 fig.update_layout(
     title=f"{choix} · {periode_choisie}",
-    xaxis_title="Date",
+    xaxis_title="Date" if not avec_rsi else None,
     yaxis_title=f"Prix ({symbole})",
     template="plotly_dark",
     xaxis_rangeslider_visible=False,
-    height=520,
+    height=700 if avec_rsi else 520,
 )
 st.plotly_chart(fig, use_container_width=True)
+
+if avec_rsi:
+    rsi_actuel = serie_rsi.iloc[-1]
+    st.caption(f"RSI actuel : {rsi_actuel:.0f} · {ind.interpreter_rsi(rsi_actuel)}.")
+if afficher_ma200 and (serie_ma200 is None or serie_ma200.empty):
+    st.caption("MA200 indisponible : cette action n'a pas encore 200 jours d'historique.")
 
 # ---------------------------------------------------------------
 # Les alertes
@@ -193,24 +286,39 @@ col_form, col_actives = st.columns(2)
 
 with col_form:
     st.subheader(f"Nouvelle alerte sur {choix}")
-    with st.form("formulaire_alerte"):
-        sens_choisi = st.radio(
-            "Prévenez-moi quand le cours est", ["au-dessus de", "en dessous de"], horizontal=True
-        )
+
+    type_choisi = st.radio("Type d'alerte", ["Prix", "Variation du jour (%)"], horizontal=True)
+
+    if type_choisi == "Prix":
+        type_alerte = "prix"
+        sens_choisi = st.radio("Prévenez-moi quand le cours est", ["au-dessus de", "en dessous de"], horizontal=True)
+        sens = "hausse" if sens_choisi == "au-dessus de" else "baisse"
         seuil = st.number_input(
             f"Seuil ({symbole})", min_value=0.01, value=round(float(dernier), 2), step=1.0, format="%.2f"
         )
-        valide = st.form_submit_button("Créer l'alerte")
+    else:
+        type_alerte = "variation_jour"
+        sens_choisi = st.radio("Prévenez-moi quand l'action", ["monte d'au moins", "baisse d'au moins"], horizontal=True)
+        sens = "hausse" if sens_choisi == "monte d'au moins" else "baisse"
+        seuil = st.number_input("Variation sur la journée (%)", min_value=0.1, value=5.0, step=0.5, format="%.1f")
 
-    if valide:
-        sens = "hausse" if sens_choisi == "au-dessus de" else "baisse"
-        db.creer_alerte(choix, sens, float(seuil))
+    if st.button("Créer l'alerte"):
+        db.creer_alerte(choix, sens, float(seuil), type_alerte)
         ajouter_message("success", f"Alerte créée sur {choix}.")
-        deja_franchi = (dernier >= seuil) if sens == "hausse" else (dernier <= seuil)
+
+        # On prévient si la condition est déjà vraie : l'alerte partira à la prochaine vérification
+        if type_alerte == "prix":
+            deja_franchi = (dernier >= seuil) if sens == "hausse" else (dernier <= seuil)
+        else:
+            resume = resume_du_jour(choix)
+            variation_actuelle = resume[1] if resume else None
+            deja_franchi = variation_actuelle is not None and (
+                variation_actuelle >= seuil if sens == "hausse" else variation_actuelle <= -seuil
+            )
         if deja_franchi:
             ajouter_message(
                 "info",
-                "Ce seuil est déjà franchi par le cours actuel : l'alerte se déclenchera "
+                "Cette condition est déjà remplie actuellement : l'alerte se déclenchera "
                 "à la prochaine vérification.",
             )
         st.rerun()
@@ -222,20 +330,19 @@ with col_actives:
         st.caption("Aucune alerte pour le moment.")
     for alerte in alertes:
         c_texte, c_bouton = st.columns([5, 1])
-        signe = "≥" if alerte["sens"] == "hausse" else "≤"
-        c_texte.write(f"**{alerte['ticker']}**  {signe}  {alerte['seuil']:.2f} {devise(alerte['ticker'])}")
+        c_texte.write(f"**{alerte['ticker']}**  {libelle_condition(alerte)}")
         if c_bouton.button("✕", key=f"suppr_{alerte['id']}", help="Supprimer cette alerte"):
             db.supprimer_alerte(alerte["id"])
             st.rerun()
 
     if alertes and st.button("Vérifier les alertes maintenant"):
         declenchees, echecs = verifier_alertes()
-        for alerte, cours_actuel, information in declenchees:
-            ajouter_message("warning", f"Alerte déclenchée · {decrire(alerte, cours_actuel)} ({information})")
-        for alerte, cours_actuel, explication in echecs:
+        for alerte, mesure, information in declenchees:
+            ajouter_message("warning", f"Alerte déclenchée · {decrire(alerte, mesure)} ({information})")
+        for alerte, mesure, explication in echecs:
             ajouter_message(
                 "error",
-                f"Seuil franchi · {decrire(alerte, cours_actuel)}, mais le message Telegram n'est pas parti : "
+                f"Seuil franchi · {decrire(alerte, mesure)}, mais le message Telegram n'est pas parti : "
                 f"{explication} L'alerte reste active.",
             )
         if not declenchees and not echecs:
@@ -251,17 +358,18 @@ with col_actives:
 # Historique
 # ---------------------------------------------------------------
 st.subheader("Alertes déclenchées")
-historique = db.lister_historique()
-if historique:
+historique_alertes = db.lister_historique()
+if historique_alertes:
     st.dataframe(
         [
             {
                 "Date": h["date_declenchement"],
                 "Action": h["ticker"],
-                "Condition": f"{'≥' if h['sens'] == 'hausse' else '≤'} {h['seuil']:.2f} {devise(h['ticker'])}",
-                "Cours au déclenchement": f"{h['cours']:.2f} {devise(h['ticker'])}",
+                "Condition": libelle_condition(h),
+                "Cours au déclenchement": f"{h['cours']:.2f} {devise(h['ticker'])}"
+                + (f" ({h['variation']:+.2f} %)" if h["variation"] is not None else ""),
             }
-            for h in historique
+            for h in historique_alertes
         ],
         hide_index=True,
         use_container_width=True,

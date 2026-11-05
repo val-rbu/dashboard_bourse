@@ -25,6 +25,20 @@ def dernier_prix(ticker):
     return None
 
 
+def variation_jour(ticker):
+    """Renvoie (dernier cours, variation en % par rapport à la clôture précédente), ou None.
+
+    Même calcul que la liste de suivi de l'interface : on compare les deux
+    dernières clôtures journalières.
+    """
+    clotures = recuperer_cours(ticker, "5d", "1d")["Close"].dropna()
+    if len(clotures) < 2:
+        return None
+    dernier = float(clotures.iloc[-1])
+    precedent = float(clotures.iloc[-2])
+    return dernier, (dernier - precedent) / precedent * 100
+
+
 def devise(ticker):
     """Les actions de Paris finissent par .PA et sont en euros, les autres en dollars."""
     return "€" if ticker.endswith(".PA") else "$"
