@@ -1,4 +1,4 @@
-"""Étape 9 : tableau de bord financier (indicateurs, alertes, comparaison, portefeuille, actualités).
+"""Étape 10 : tableau de bord financier (indicateurs, alertes, comparaison, portefeuille, actualités, backtest).
 
 Pour lancer l'application, dans le terminal :
     streamlit run app.py
@@ -9,17 +9,20 @@ Fichiers du projet :
     indicateurs.py  moyennes mobiles et RSI
     comparaison.py  courbes de base 100
     actualites.py   mise en forme des actualités
+    backtest.py     simulation de règles d'achat et de vente
     portefeuille.py calculs de valeur et de gain
     database.py     base SQLite (liste de suivi, alertes, historique)
     verificateur.py vérification des alertes
     notifications.py envoi des messages Telegram
 """
 
+import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 import actualites
+import backtest
 import comparaison
 import database as db
 import indicateurs as ind
@@ -102,7 +105,7 @@ def afficher_messages():
 liste_suivi = db.lister_watchlist()
 
 with st.sidebar:
-    vue = st.radio("Vue", ["Une action", "Comparaison", "Portefeuille"], horizontal=True)
+    vue = st.radio("Vue", ["Une action", "Comparaison", "Portefeuille", "Backtest"], horizontal=True)
     st.header("Ma liste de suivi")
 
     nouveau = st.text_input("Ajouter une action (ticker)", placeholder="ex. NVDA ou AIR.PA")
@@ -302,6 +305,97 @@ if vue == "Comparaison":
 
 if choix is None:
     st.info("Ta liste de suivi est vide : ajoute une action dans la colonne de gauche.")
+    st.stop()
+
+# ---------------------------------------------------------------
+# Vue Backtest : tester une règle d'achat et de vente sur le passé
+# ---------------------------------------------------------------
+if vue == "Backtest":
+    st.subheader(f"Backtest · {choix}")
+    st.caption("Que se serait-il passé si on avait appliqué une règle d'achat et de vente dans le passé ?")
+
+    regle = st.radio("Règle", ["RSI : acheter en survente, vendre en surchauffe", "Croisement de moyennes mobiles"])
+    c_a, c_b, c_c, c_d = st.columns(4)
+    if regle.startswith("RSI"):
+        seuil_achat = c_a.number_input("Acheter quand le RSI passe sous", min_value=5, max_value=50, value=30, step=1)
+        seuil_vente = c_b.number_input("Vendre quand le RSI dépasse", min_value=50, max_value=95, value=70, step=1)
+    else:
+        ma_courte = c_a.number_input("Moyenne courte (jours)", min_value=5, max_value=100, value=50, step=5)
+        ma_longue = c_b.number_input("Moyenne longue (jours)", min_value=20, max_value=400, value=200, step=10)
+        if ma_courte >= ma_longue:
+            st.warning("La moyenne courte doit être plus petite que la longue.")
+            st.stop()
+    frais_pct = c_c.number_input("Frais par achat ou vente (%)", min_value=0.0, max_value=2.0, value=0.1, step=0.05, format="%.2f")
+    duree = c_d.radio("Période testée", ["1A", "3A", "5A"], index=2, horizontal=True)
+
+    # On charge 10 ans pour que les indicateurs soient déjà calculés au début de la période testée
+    historique_bt = recuperer_cours(choix, "10y", "1d")["Close"].dropna()
+    if len(historique_bt) < 260:
+        st.warning("Historique trop court pour tester une règle sur cette action.")
+        st.stop()
+
+    if regle.startswith("RSI"):
+        signal = backtest.signal_rsi(historique_bt, seuil_achat, seuil_vente)
+    else:
+        signal = backtest.signal_croisement(historique_bt, int(ma_courte), int(ma_longue))
+
+    annees = int(duree[0])
+    debut_test = historique_bt.index[-1] - pd.DateOffset(years=annees)
+    resultat = backtest.simuler(historique_bt, signal, debut=debut_test, frais=frais_pct / 100)
+    stats = resultat["stats"]
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Avec la règle", f"{stats['perf_strategie']:+.1f} %",
+              f"{stats['perf_strategie'] - stats['perf_reference']:+.1f} pts vs conserver")
+    m2.metric("Acheter et conserver", f"{stats['perf_reference']:+.1f} %")
+    m3.metric("Transactions", f"{stats['nb_trades']}",
+              f"{stats['taux_reussite']:.0f} % gagnantes" if stats["taux_reussite"] is not None else "aucune terminée")
+    m4.metric("Plus forte baisse", f"{stats['baisse_max_strategie']:.1f} %",
+              f"{stats['baisse_max_reference']:.1f} % si conservé", delta_color="off")
+
+    fig_bt = go.Figure()
+    fig_bt.add_trace(go.Scatter(x=resultat["reference"].index, y=resultat["reference"], mode="lines",
+                                name="Acheter et conserver", line=dict(color="#9FB0CC", width=1.6)))
+    fig_bt.add_trace(go.Scatter(x=resultat["courbe"].index, y=resultat["courbe"], mode="lines",
+                                name="Avec la règle", line=dict(color="#2DD4BF", width=2)))
+    achats = [t["entree"] for t in resultat["trades"]]
+    ventes = [t["sortie"] for t in resultat["trades"] if not t["en_cours"]]
+    if achats:
+        fig_bt.add_trace(go.Scatter(x=achats, y=resultat["courbe"].loc[achats], mode="markers", name="Achat",
+                                    marker=dict(symbol="triangle-up", size=11, color="#34D399")))
+    if ventes:
+        fig_bt.add_trace(go.Scatter(x=ventes, y=resultat["courbe"].loc[ventes], mode="markers", name="Vente",
+                                    marker=dict(symbol="triangle-down", size=11, color="#F87171")))
+    fig_bt.update_layout(
+        title=f"{choix} · valeur d'un capital de 100 · {duree}",
+        yaxis_title="Capital (base 100)", template="plotly_dark", height=480,
+    )
+    st.plotly_chart(fig_bt, use_container_width=True)
+
+    if resultat["trades"]:
+        symbole_bt = devise(choix)
+        st.dataframe(
+            [
+                {
+                    "Achat": f"{t['entree']:%d/%m/%Y}",
+                    "Prix d'achat": f"{t['prix_entree']:.2f} {symbole_bt}",
+                    "Vente": "en cours" if t["en_cours"] else f"{t['sortie']:%d/%m/%Y}",
+                    "Prix de vente": f"{t['prix_sortie']:.2f} {symbole_bt}" + (" (dernier cours)" if t["en_cours"] else ""),
+                    "Résultat": f"{t['rendement_pct']:+.1f} %",
+                }
+                for t in reversed(resultat["trades"])
+            ],
+            hide_index=True,
+            use_container_width=True,
+        )
+    else:
+        st.info("La règle n'a déclenché aucune transaction sur cette période.")
+
+    st.caption(
+        f"Temps passé investi : {stats['temps_investi']:.0f} % de la période. Achats et ventes au cours de clôture du jour du signal, "
+        "capital entièrement investi, sans impôts ni dividendes. Le passé ne garantit pas l'avenir, et une règle réglée après coup "
+        "sur un historique donné peut paraître meilleure qu'elle ne le sera vraiment. Aide à la décision, pas un conseil financier."
+    )
     st.stop()
 
 col_periode, col_type = st.columns(2)
