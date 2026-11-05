@@ -4,4 +4,4 @@ __pycache__/
 .env
 bourse.db
 .ipynb_checkpoints/
-.vscode/
+.vscode/ 

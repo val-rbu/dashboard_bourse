@@ -1,16 +1,26 @@
 # Tableau de bord financier
 
-Application web qui permet de suivre des actions françaises et américaines, de voir l'évolution de leur cours et d'être prévenu par Telegram quand un seuil de prix est franchi. Projet de cours en Python.
+Application web qui permet de suivre des actions françaises et américaines, de voir l'évolution de leur cours d'analyser leur évolution (indicateurs, comparaison, portefeuille) et d'être prévenu par Telegram quand une alerte se déclenche. Projet de cours en Python.
 
 > Les cours sont différés d'environ 15 minutes et viennent de `yfinance` (non officiel). L'outil est une aide à la décision et ne constitue pas un conseil financier.
 
 ## Fonctionnalités
 
-- Liste de suivi sauvegardée (ajout et retrait d'actions par ticker, par exemple `AAPL` ou `MC.PA`)
+**Suivi d'une action**
+- Liste de suivi sauvegardée (ajout et retrait par ticker, par exemple `AAPL` ou `MC.PA`), avec dernier cours et variation du jour
 - Graphiques interactifs en courbe ou en chandeliers, sur 1 jour, 1 mois, 1 an ou 5 ans
-- Alertes à seuil de prix (au-dessus ou en dessous), affichées sur le graphique
-- Historique des alertes déclenchées
+- Indicateurs techniques : moyennes mobiles 50 et 200 jours, RSI 14 jours
+
+**Alertes** (une alerte se déclenche une fois, puis passe dans l'historique)
+- Seuil de prix, au-dessus ou en dessous (affiché sur le graphique)
+- Variation du jour en pourcentage
+- RSI en surchauffe ou en survente
+- Croisement des moyennes mobiles MA50 / MA200 (sur les 5 dernières séances)
 - Notifications Telegram
+
+**Comparaison** : plusieurs actions et indices (CAC 40, S&P 500) sur un même graphique en base 100, avec classement des performances.
+
+**Portefeuille** : saisie des achats, prix d'achat moyen, valeur actuelle, gain ou perte par action et au total (par devise), répartition.
 
 ## Installation (Windows)
 
@@ -48,13 +58,23 @@ python verificateur.py --boucle       # vérifier les alertes toutes les 5 minut
 |---|---|
 | `app.py` | Interface Streamlit |
 | `data.py` | Récupération des cours |
-| `database.py` | Base SQLite (liste de suivi, alertes, historique) |
+| `indicateurs.py` | Moyennes mobiles, RSI, croisements |
+| `comparaison.py` | Courbes de base 100 |
+| `portefeuille.py` | Calculs de valeur et de gain |
+| `database.py` | Base SQLite (liste de suivi, alertes, historique, portefeuille) |
 | `verificateur.py` | Vérification des alertes |
 | `notifications.py` | Envoi des messages Telegram |
 
 La base de données `bourse.db` est créée automatiquement au premier lancement.
 
+## Limites connues
+
+- Les alertes ne sont vérifiées que lorsqu'on clique sur « Vérifier les alertes maintenant » ou qu'on laisse tourner `python verificateur.py --boucle` sur l'ordinateur.
+- L'application tourne en local : la base SQLite et le fichier `.env` restent sur la machine.
+- Les cours viennent de `yfinance`, un service non officiel qui peut être indisponible ou changer.
+- Le portefeuille ne convertit pas les euros en dollars : chaque devise est totalisée séparément.
+
 ## Suite prévue
 
-- Version 2 : indicateurs techniques (moyennes mobiles, RSI), alertes en pourcentage, portefeuille, comparaison d'actions
 - Version 3 : actualités, score de sentiment, backtesting, prédiction simple, comptes utilisateurs
+- Vérification automatique en continu, hébergement
