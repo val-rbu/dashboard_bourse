@@ -1,4 +1,4 @@
-"""Étape 6 : tableau de bord financier avec indicateurs techniques et alertes en pourcentage.
+"""Étape 7a : tableau de bord financier avec indicateurs, alertes et comparaison base 100.
 
 Pour lancer l'application, dans le terminal :
     streamlit run app.py
@@ -7,6 +7,7 @@ Fichiers du projet :
     app.py          l'interface (ce fichier)
     data.py         récupération des cours
     indicateurs.py  moyennes mobiles et RSI
+    comparaison.py  courbes de base 100
     database.py     base SQLite (liste de suivi, alertes, historique)
     verificateur.py vérification des alertes
     notifications.py envoi des messages Telegram
@@ -16,6 +17,7 @@ import streamlit as st
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+import comparaison
 import database as db
 import indicateurs as ind
 from data import devise
@@ -38,6 +40,12 @@ PERIODES = {
     "1A": ("1y", "1d"),
     "5A": ("5y", "1wk"),
 }
+
+# Périodes de la vue Comparaison (pas de 1J : les horaires de Paris et New York diffèrent)
+PERIODES_COMPARAISON = {k: v for k, v in PERIODES.items() if k != "1J"}
+
+# Indices de référence proposés dans la vue Comparaison (symboles Yahoo Finance)
+INDICES = {"^FCHI": "CAC 40", "^GSPC": "S&P 500"}
 
 # Couleurs des courbes d'indicateurs
 COULEUR_MA50 = "#F59E0B"
@@ -84,6 +92,7 @@ def afficher_messages():
 liste_suivi = db.lister_watchlist()
 
 with st.sidebar:
+    vue = st.radio("Vue", ["Une action", "Comparaison"], horizontal=True)
     st.header("Ma liste de suivi")
 
     nouveau = st.text_input("Ajouter une action (ticker)", placeholder="ex. NVDA ou AIR.PA")
@@ -125,6 +134,68 @@ with st.sidebar:
 st.title("Tableau de bord financier")
 st.caption("Cours différés d'environ 15 minutes · source : yfinance")
 afficher_messages()
+
+# ---------------------------------------------------------------
+# Vue Comparaison : plusieurs actions et indices en base 100
+# ---------------------------------------------------------------
+if vue == "Comparaison":
+    def nom_affiche(symbole_yahoo):
+        return INDICES.get(symbole_yahoo, symbole_yahoo)
+
+    st.subheader("Comparaison de performance")
+    selection = st.multiselect(
+        "Actions et indices à comparer",
+        liste_suivi + list(INDICES),
+        default=liste_suivi[:2] + ["^GSPC"],
+        format_func=nom_affiche,
+    )
+    periode_comp = st.radio("Période", list(PERIODES_COMPARAISON), index=1, horizontal=True, key="periode_comp")
+
+    if len(selection) < 2:
+        st.info("Choisis au moins deux actions ou indices à comparer.")
+        st.stop()
+
+    periode_c, intervalle_c = PERIODES_COMPARAISON[periode_comp]
+    clotures = {}
+    indisponibles = []
+    for symbole_yahoo in selection:
+        donnees = recuperer_cours(symbole_yahoo, periode_c, intervalle_c)
+        if donnees.empty:
+            indisponibles.append(symbole_yahoo)
+        else:
+            clotures[nom_affiche(symbole_yahoo)] = donnees["Close"]
+    if indisponibles:
+        st.warning("Données indisponibles pour : " + ", ".join(indisponibles))
+
+    courbes = comparaison.base_100(clotures)
+    if courbes.empty or len(courbes.columns) < 2:
+        st.warning("Pas assez de données communes pour comparer. Réessaie dans une minute.")
+        st.stop()
+
+    fig_comp = go.Figure()
+    for nom in courbes.columns:
+        fig_comp.add_trace(go.Scatter(x=courbes.index, y=courbes[nom], mode="lines", name=nom))
+    fig_comp.add_hline(y=100, line_dash="dot", line_color="#9FB0CC")
+    fig_comp.update_layout(
+        title=f"Performance comparée (base 100) · {periode_comp}",
+        yaxis_title="Base 100 au départ",
+        template="plotly_dark",
+        height=520,
+    )
+    st.plotly_chart(fig_comp, use_container_width=True)
+
+    # Classement, de la meilleure à la moins bonne performance
+    performances = (courbes.iloc[-1] - 100).sort_values(ascending=False)
+    st.dataframe(
+        [{"Valeur": nom, "Performance": f"{perf:+.1f} %"} for nom, perf in performances.items()],
+        hide_index=True,
+        use_container_width=True,
+    )
+    st.caption(
+        f"Départ commun : {courbes.index[0]:%d/%m/%Y}. Les performances sont calculées sur les cours, "
+        "dans la devise de chaque valeur, sans dividendes. Aide à la décision, pas un conseil financier."
+    )
+    st.stop()
 
 if choix is None:
     st.info("Ta liste de suivi est vide : ajoute une action dans la colonne de gauche.")
