@@ -1,4 +1,5 @@
-"""Étape 10 : tableau de bord financier (indicateurs, alertes, comparaison, portefeuille, actualités, backtest).
+"""Étape 11 : tableau de bord financier (indicateurs, alertes, comparaison, portefeuille, actualités, sentiment,
+backtest, projection, export CSV).
 
 Pour lancer l'application, dans le terminal :
     streamlit run app.py
@@ -10,6 +11,9 @@ Fichiers du projet :
     comparaison.py  courbes de base 100
     actualites.py   mise en forme des actualités
     backtest.py     simulation de règles d'achat et de vente
+    sentiment.py    score de sentiment des titres d'actualité
+    projection.py   projection de tendance et son évaluation
+    export.py       export CSV
     portefeuille.py calculs de valeur et de gain
     database.py     base SQLite (liste de suivi, alertes, historique)
     verificateur.py vérification des alertes
@@ -25,8 +29,11 @@ import actualites
 import backtest
 import comparaison
 import database as db
+import export
 import indicateurs as ind
 import portefeuille
+import projection
+import sentiment
 from data import actualites_brutes, devise
 from data import recuperer_cours as _recuperer_cours
 from notifications import telegram_configure
@@ -105,7 +112,7 @@ def afficher_messages():
 liste_suivi = db.lister_watchlist()
 
 with st.sidebar:
-    vue = st.radio("Vue", ["Une action", "Comparaison", "Portefeuille", "Backtest"], horizontal=True)
+    vue = st.radio("Vue", ["Une action", "Comparaison", "Portefeuille", "Backtest", "Projection"])
     st.header("Ma liste de suivi")
 
     nouveau = st.text_input("Ajouter une action (ticker)", placeholder="ex. NVDA ou AIR.PA")
@@ -211,6 +218,22 @@ if vue == "Portefeuille":
         ],
         hide_index=True,
         use_container_width=True,
+    )
+
+    st.download_button(
+        "Télécharger le portefeuille (CSV)",
+        export.vers_csv(
+            [
+                {
+                    "Action": l["ticker"], "Devise": l["devise"], "Quantité": l["quantite"],
+                    "Prix d'achat moyen": l["pru"], "Cours actuel": l["cours"], "Valeur": l["valeur"],
+                    "Gain": l["gain"], "Gain (%)": l["gain_pct"],
+                }
+                for l in lignes
+            ]
+        ),
+        file_name="portefeuille.csv",
+        mime="text/csv",
     )
 
     # Répartition : un graphique par devise (on ne mélange pas € et $)
@@ -388,6 +411,21 @@ if vue == "Backtest":
             hide_index=True,
             use_container_width=True,
         )
+        st.download_button(
+            "Télécharger les transactions (CSV)",
+            export.vers_csv(
+                [
+                    {
+                        "Achat": f"{t['entree']:%Y-%m-%d}", "Prix d'achat": t["prix_entree"],
+                        "Vente": "" if t["en_cours"] else f"{t['sortie']:%Y-%m-%d}", "Prix de vente": t["prix_sortie"],
+                        "Résultat (%)": t["rendement_pct"], "En cours": t["en_cours"],
+                    }
+                    for t in resultat["trades"]
+                ]
+            ),
+            file_name=f"backtest_{choix}.csv",
+            mime="text/csv",
+        )
     else:
         st.info("La règle n'a déclenché aucune transaction sur cette période.")
 
@@ -396,6 +434,69 @@ if vue == "Backtest":
         "capital entièrement investi, sans impôts ni dividendes. Le passé ne garantit pas l'avenir, et une règle réglée après coup "
         "sur un historique donné peut paraître meilleure qu'elle ne le sera vraiment. Aide à la décision, pas un conseil financier."
     )
+    st.stop()
+
+# ---------------------------------------------------------------
+# Vue Projection : prolonger la tendance récente (indicatif)
+# ---------------------------------------------------------------
+if vue == "Projection":
+    st.subheader(f"Projection de tendance · {choix}")
+    st.warning(
+        "Ce n'est pas une prévision : la projection prolonge simplement la tendance récente. "
+        "La mesure de fiabilité ci-dessous montre à quel point elle s'est trompée dans le passé."
+    )
+    c_hist, c_hor = st.columns(2)
+    base_choisie = c_hist.radio("Historique utilisé pour la tendance", ["6 mois", "1 an", "3 ans"], index=1, horizontal=True)
+    horizon = c_hor.radio("Horizon de projection", [30, 60, 90], index=0, horizontal=True, format_func=lambda j: f"{j} jours")
+    jours_historique = {"6 mois": 126, "1 an": 252, "3 ans": 756}[base_choisie]
+
+    serie_proj = recuperer_cours(choix, "5y", "1d")["Close"].dropna()
+    if len(serie_proj) < jours_historique + horizon + 60:
+        st.warning("Historique trop court pour cette combinaison. Choisis un historique ou un horizon plus petit.")
+        st.stop()
+
+    resultat_proj = projection.projeter(serie_proj, jours_historique, horizon)
+    previsions = resultat_proj["previsions"]
+    symbole_p = devise(choix)
+    dernier_p = float(serie_proj.iloc[-1])
+    centre_final = float(previsions["centre"].iloc[-1])
+
+    k1, k2, k3 = st.columns(3)
+    k1.metric("Dernier cours", f"{dernier_p:.2f} {symbole_p}")
+    k2.metric(f"Projection à {horizon} jours", f"{centre_final:.2f} {symbole_p}", f"{(centre_final / dernier_p - 1) * 100:+.1f} %")
+    k3.metric("Fourchette à 95 %", f"{previsions['bas'].iloc[-1]:.0f} – {previsions['haut'].iloc[-1]:.0f} {symbole_p}")
+
+    recent = serie_proj.iloc[-252:]
+    fig_p = go.Figure()
+    fig_p.add_trace(go.Scatter(x=recent.index, y=recent, mode="lines", name="Cours", line=dict(color="#9FB0CC", width=1.8)))
+    fig_p.add_trace(go.Scatter(x=previsions.index, y=previsions["haut"], mode="lines", name="Haut 95 %",
+                               line=dict(width=0), showlegend=False))
+    fig_p.add_trace(go.Scatter(x=previsions.index, y=previsions["bas"], mode="lines", name="Fourchette à 95 %",
+                               line=dict(width=0), fill="tonexty", fillcolor="rgba(45,212,191,0.18)"))
+    fig_p.add_trace(go.Scatter(x=previsions.index, y=previsions["centre"], mode="lines", name="Projection",
+                               line=dict(color="#2DD4BF", width=2, dash="dash")))
+    fig_p.update_layout(title=f"{choix} · projection sur {horizon} jours", yaxis_title=f"Prix ({symbole_p})",
+                        template="plotly_dark", height=480)
+    st.plotly_chart(fig_p, use_container_width=True)
+
+    st.subheader("Cette méthode s'est-elle déjà trompée ?")
+    bilan = projection.evaluer(serie_proj, jours_historique, horizon)
+    if bilan is None:
+        st.caption("Historique insuffisant pour mesurer la fiabilité.")
+    else:
+        e1, e2, e3 = st.columns(3)
+        e1.metric("Cours réel dans la fourchette", f"{bilan['couverture_pct']:.0f} %", "objectif : environ 95 %", delta_color="off")
+        e2.metric("Erreur moyenne de la projection", f"{bilan['erreur_modele_pct']:.1f} %")
+        e3.metric("Erreur si « le cours ne bouge pas »", f"{bilan['erreur_naive_pct']:.1f} %")
+        if bilan["erreur_modele_pct"] < bilan["erreur_naive_pct"]:
+            verdict = "Sur cet historique, prolonger la tendance a fait un peu mieux que supposer que le cours ne bouge pas."
+        else:
+            verdict = "Sur cet historique, prolonger la tendance n'a pas fait mieux que supposer que le cours ne bouge pas."
+        st.caption(
+            f"{verdict} Test rejoué sur {bilan['nombre_tests']} dates du passé, avec les seules données connues à l'époque. "
+            "Les cours sont en grande partie imprévisibles à court terme : ne pas se fier à cette projection pour décider. "
+            "Aide à la décision, pas un conseil financier."
+        )
     st.stop()
 
 col_periode, col_type = st.columns(2)
@@ -554,13 +655,23 @@ st.subheader(f"Actualités · {choix}")
 articles = liste_actualites(choix)
 if not articles:
     st.caption("Aucune actualité disponible pour le moment (la source peut être indisponible).")
-for article in articles:
-    st.markdown(f"**{actualites.lien_markdown(article['titre'], article['lien'])}**")
+scores = [sentiment.score_titre(a["titre"]) for a in articles]
+resume_sentiment = sentiment.synthese(scores)
+if resume_sentiment:
+    st.caption(
+        f"Sentiment des titres : **{resume_sentiment['etiquette']}** ({resume_sentiment['moyenne']:+.2f}) · "
+        f"🟢 {resume_sentiment['positifs']} · ⚪ {resume_sentiment['neutres']} · 🔴 {resume_sentiment['negatifs']}"
+    )
+for article, score in zip(articles, scores):
+    st.markdown(f"{sentiment.pastille(score)} **{actualites.lien_markdown(article['titre'], article['lien'])}**")
     ligne = " · ".join(x for x in (article["source"], actualites.depuis(article["date"])) if x)
     if ligne:
         st.caption(ligne)
 if articles:
-    st.caption("Articles en général rédigés en anglais, fournis par Yahoo Finance : cliquer sur un titre ouvre l'article d'origine.")
+    st.caption(
+        "Articles en général rédigés en anglais, fournis par Yahoo Finance : cliquer sur un titre ouvre l'article d'origine. "
+        "Le sentiment est un simple décompte de mots positifs et négatifs dans le titre : indicatif, il ne comprend pas le contexte."
+    )
 
 # ---------------------------------------------------------------
 # Les alertes
@@ -676,6 +787,20 @@ if historique_alertes:
         ],
         hide_index=True,
         use_container_width=True,
+    )
+    st.download_button(
+        "Télécharger l'historique (CSV)",
+        export.vers_csv(
+            [
+                {
+                    "Date": h["date_declenchement"], "Action": h["ticker"], "Condition": libelle_condition(h),
+                    "Cours": h["cours"], "Variation du jour (%)": h["variation"],
+                }
+                for h in historique_alertes
+            ]
+        ),
+        file_name="historique_alertes.csv",
+        mime="text/csv",
     )
 else:
     st.caption("Aucune alerte déclenchée pour le moment.")

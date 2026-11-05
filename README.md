@@ -22,6 +22,14 @@ Application web qui permet de suivre des actions françaises et américaines, de
 
 **Portefeuille** : saisie des achats, prix d'achat moyen, valeur actuelle, gain ou perte par action et au total (par devise), répartition.
 
+**Actualités** : derniers articles par action, avec lien vers l'article d'origine et un score de sentiment des titres (méthode du dictionnaire, indicatif).
+
+**Backtest** : simulation d'une règle d'achat et de vente sur 1, 3 ou 5 ans (RSI ou croisement de moyennes mobiles), comparée à « acheter et conserver », avec frais, transactions et plus forte baisse.
+
+**Projection** : prolongement de la tendance récente avec une fourchette à 95 %, accompagné d'un test de fiabilité rejoué sur le passé (la méthode est comparée à « le cours ne bouge pas »).
+
+**Export** : portefeuille, historique des alertes et transactions du backtest en CSV, lisibles directement dans Excel.
+
 ## Installation (Windows)
 
 Prérequis : Python 3 et VS Code. Le projet a été développé avec Python 3.15.
@@ -61,6 +69,11 @@ python verificateur.py --boucle       # vérifier les alertes toutes les 5 minut
 | `indicateurs.py` | Moyennes mobiles, RSI, croisements |
 | `comparaison.py` | Courbes de base 100 |
 | `portefeuille.py` | Calculs de valeur et de gain |
+| `actualites.py` | Mise en forme des actualités et liens |
+| `sentiment.py` | Score de sentiment des titres |
+| `backtest.py` | Simulation de règles d'achat et de vente |
+| `projection.py` | Projection de tendance et évaluation |
+| `export.py` | Export CSV |
 | `database.py` | Base SQLite (liste de suivi, alertes, historique, portefeuille) |
 | `verificateur.py` | Vérification des alertes |
 | `notifications.py` | Envoi des messages Telegram |
@@ -72,9 +85,12 @@ La base de données `bourse.db` est créée automatiquement au premier lancement
 - Les alertes ne sont vérifiées que lorsqu'on clique sur « Vérifier les alertes maintenant » ou qu'on laisse tourner `python verificateur.py --boucle` sur l'ordinateur.
 - L'application tourne en local : la base SQLite et le fichier `.env` restent sur la machine.
 - Les cours viennent de `yfinance`, un service non officiel qui peut être indisponible ou changer.
+- Le sentiment compte des mots : il ne comprend ni le contexte ni l'ironie.
+- La projection et le backtest sont des outils d'analyse : le passé ne garantit pas l'avenir, et les cours sont en grande partie imprévisibles à court terme.
 - Le portefeuille ne convertit pas les euros en dollars : chaque devise est totalisée séparément.
 
 ## Suite prévue
 
-- Version 3 : actualités, score de sentiment, backtesting, prédiction simple, comptes utilisateurs
+- Comptes multi-utilisateurs
 - Vérification automatique en continu, hébergement
+- Autres indicateurs (MACD, bandes de Bollinger), alerte de volume anormal
