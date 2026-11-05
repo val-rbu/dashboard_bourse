@@ -39,6 +39,14 @@ def variation_jour(ticker):
     return dernier, (dernier - precedent) / precedent * 100
 
 
+def actualites_brutes(ticker):
+    """Renvoie la liste brute des articles récents sur l'action (liste vide en cas de problème)."""
+    try:
+        return yf.Ticker(ticker).news or []
+    except Exception:   # yfinance est instable : mieux vaut aucune actualité qu'une page en erreur
+        return []
+
+
 def clotures_5ans(ticker):
     """Clôtures journalières des 5 dernières années (série vide si indisponible)."""
     return recuperer_cours(ticker, "5y", "1d")["Close"].dropna()

@@ -1,4 +1,4 @@
-"""Étape 8a : tableau de bord financier avec indicateurs, alertes (prix, %, RSI, croisement), comparaison et portefeuille.
+"""Étape 9 : tableau de bord financier (indicateurs, alertes, comparaison, portefeuille, actualités).
 
 Pour lancer l'application, dans le terminal :
     streamlit run app.py
@@ -8,6 +8,7 @@ Fichiers du projet :
     data.py         récupération des cours
     indicateurs.py  moyennes mobiles et RSI
     comparaison.py  courbes de base 100
+    actualites.py   mise en forme des actualités
     portefeuille.py calculs de valeur et de gain
     database.py     base SQLite (liste de suivi, alertes, historique)
     verificateur.py vérification des alertes
@@ -18,11 +19,12 @@ import streamlit as st
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+import actualites
 import comparaison
 import database as db
 import indicateurs as ind
 import portefeuille
-from data import devise
+from data import actualites_brutes, devise
 from data import recuperer_cours as _recuperer_cours
 from notifications import telegram_configure
 from verificateur import condition_remplie, decrire, libelle_condition, mesurer, verifier_alertes
@@ -61,6 +63,12 @@ COULEUR_RSI = "#2DD4BF"
 @st.cache_data(ttl=300)
 def recuperer_cours(ticker, periode, intervalle):
     return _recuperer_cours(ticker, periode, intervalle)
+
+
+@st.cache_data(ttl=900)
+def liste_actualites(ticker):
+    """Actualités de l'action, mises en forme (mémorisées 15 minutes)."""
+    return actualites.normaliser(actualites_brutes(ticker), limite=8)
 
 
 @st.cache_data(ttl=300)
@@ -443,6 +451,22 @@ if avec_rsi:
     st.caption(f"RSI actuel : {rsi_actuel:.0f} · {ind.interpreter_rsi(rsi_actuel)}.")
 if afficher_ma200 and (serie_ma200 is None or serie_ma200.empty):
     st.caption("MA200 indisponible : cette action n'a pas encore 200 jours d'historique.")
+
+# ---------------------------------------------------------------
+# Les actualités
+# ---------------------------------------------------------------
+st.divider()
+st.subheader(f"Actualités · {choix}")
+articles = liste_actualites(choix)
+if not articles:
+    st.caption("Aucune actualité disponible pour le moment (la source peut être indisponible).")
+for article in articles:
+    st.markdown(f"**{actualites.lien_markdown(article['titre'], article['lien'])}**")
+    ligne = " · ".join(x for x in (article["source"], actualites.depuis(article["date"])) if x)
+    if ligne:
+        st.caption(ligne)
+if articles:
+    st.caption("Articles en général rédigés en anglais, fournis par Yahoo Finance : cliquer sur un titre ouvre l'article d'origine.")
 
 # ---------------------------------------------------------------
 # Les alertes
