@@ -1,4 +1,4 @@
-"""Étape 7a : tableau de bord financier avec indicateurs, alertes et comparaison base 100.
+"""Étape 7b : tableau de bord financier avec indicateurs, alertes, comparaison et portefeuille.
 
 Pour lancer l'application, dans le terminal :
     streamlit run app.py
@@ -8,6 +8,7 @@ Fichiers du projet :
     data.py         récupération des cours
     indicateurs.py  moyennes mobiles et RSI
     comparaison.py  courbes de base 100
+    portefeuille.py calculs de valeur et de gain
     database.py     base SQLite (liste de suivi, alertes, historique)
     verificateur.py vérification des alertes
     notifications.py envoi des messages Telegram
@@ -20,6 +21,7 @@ from plotly.subplots import make_subplots
 import comparaison
 import database as db
 import indicateurs as ind
+import portefeuille
 from data import devise
 from data import recuperer_cours as _recuperer_cours
 from notifications import telegram_configure
@@ -92,7 +94,7 @@ def afficher_messages():
 liste_suivi = db.lister_watchlist()
 
 with st.sidebar:
-    vue = st.radio("Vue", ["Une action", "Comparaison"], horizontal=True)
+    vue = st.radio("Vue", ["Une action", "Comparaison", "Portefeuille"], horizontal=True)
     st.header("Ma liste de suivi")
 
     nouveau = st.text_input("Ajouter une action (ticker)", placeholder="ex. NVDA ou AIR.PA")
@@ -134,6 +136,99 @@ with st.sidebar:
 st.title("Tableau de bord financier")
 st.caption("Cours différés d'environ 15 minutes · source : yfinance")
 afficher_messages()
+
+# ---------------------------------------------------------------
+# Vue Portefeuille : mes achats, leur valeur et mon gain
+# ---------------------------------------------------------------
+if vue == "Portefeuille":
+    st.subheader("Mon portefeuille")
+
+    if liste_suivi:
+        c_t, c_q, c_p, c_b = st.columns([2, 2, 2, 2])
+        ticker_achat = c_t.selectbox("Action", liste_suivi)
+        resume_achat = resume_du_jour(ticker_achat)
+        quantite_achat = c_q.number_input("Quantité", min_value=0.0001, value=1.0, step=1.0, format="%.4f")
+        prix_achat = c_p.number_input(
+            f"Prix d'achat ({devise(ticker_achat)})",
+            min_value=0.01,
+            value=round(float(resume_achat[0]), 2) if resume_achat else 1.0,
+            step=1.0,
+            format="%.2f",
+        )
+        c_b.write("")   # petit espace pour aligner le bouton avec les champs
+        if c_b.button("Ajouter l'achat"):
+            db.ajouter_position(ticker_achat, float(quantite_achat), float(prix_achat))
+            ajouter_message("success", f"Achat de {quantite_achat:g} {ticker_achat} enregistré.")
+            st.rerun()
+    else:
+        st.info("Ajoute d'abord une action à ta liste de suivi pour pouvoir l'acheter ici.")
+
+    lots = db.lister_positions()
+    if not lots:
+        st.info("Ton portefeuille est vide : enregistre un achat ci-dessus.")
+        st.stop()
+
+    # Dernier cours de chaque action détenue
+    cours_actuels = {}
+    for t in {lot["ticker"] for lot in lots}:
+        resume_t = resume_du_jour(t)
+        cours_actuels[t] = float(resume_t[0]) if resume_t else None
+
+    lignes = portefeuille.synthese(lots, cours_actuels)
+    totaux = portefeuille.totaux_par_devise(lignes)
+
+    # Les totaux, une ligne par devise
+    for symbole_dev, t in totaux.items():
+        m1, m2, m3 = st.columns(3)
+        m1.metric(f"Valeur actuelle ({symbole_dev})", f"{t['valeur']:,.2f}".replace(",", " "))
+        m2.metric(f"Investi ({symbole_dev})", f"{t['investi']:,.2f}".replace(",", " "))
+        m3.metric(f"Gain ou perte ({symbole_dev})", f"{t['gain']:+,.2f}".replace(",", " "), f"{t['gain_pct']:+.2f} %")
+
+    st.dataframe(
+        [
+            {
+                "Action": l["ticker"],
+                "Quantité": f"{l['quantite']:g}",
+                "Prix d'achat moyen": f"{l['pru']:.2f} {l['devise']}",
+                "Cours actuel": f"{l['cours']:.2f} {l['devise']}" if l["cours"] is not None else "indisponible",
+                "Valeur": f"{l['valeur']:.2f} {l['devise']}" if l["valeur"] is not None else "-",
+                "Gain ou perte": (
+                    f"{l['gain']:+.2f} {l['devise']} ({l['gain_pct']:+.1f} %)" if l["gain"] is not None else "-"
+                ),
+            }
+            for l in lignes
+        ],
+        hide_index=True,
+        use_container_width=True,
+    )
+
+    # Répartition : un graphique par devise (on ne mélange pas € et $)
+    if totaux:
+        colonnes_pie = st.columns(len(totaux))
+        for colonne, symbole_dev in zip(colonnes_pie, totaux):
+            parts = [l for l in lignes if l["devise"] == symbole_dev and l["valeur"] is not None]
+            fig_pie = go.Figure(
+                go.Pie(labels=[l["ticker"] for l in parts], values=[l["valeur"] for l in parts], hole=0.45)
+            )
+            fig_pie.update_layout(title=f"Répartition ({symbole_dev})", template="plotly_dark", height=380)
+            colonne.plotly_chart(fig_pie, use_container_width=True)
+
+    with st.expander("Détail des achats"):
+        for lot in lots:
+            c_texte, c_bouton = st.columns([6, 1])
+            c_texte.write(
+                f"**{lot['ticker']}** · {lot['quantite']:g} à {lot['prix_achat']:.2f} {devise(lot['ticker'])} "
+                f"· {lot['date_achat'][:10]}"
+            )
+            if c_bouton.button("✕", key=f"suppr_lot_{lot['id']}", help="Supprimer cet achat"):
+                db.supprimer_position(lot["id"])
+                st.rerun()
+
+    st.caption(
+        "Valeurs au dernier cours connu (différé), sans frais ni conversion euro/dollar : "
+        "chaque devise est totalisée séparément. Aide à la décision, pas un conseil financier."
+    )
+    st.stop()
 
 # ---------------------------------------------------------------
 # Vue Comparaison : plusieurs actions et indices en base 100

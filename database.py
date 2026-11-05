@@ -1,4 +1,4 @@
-"""Base de données SQLite : liste de suivi, alertes et historique.
+"""Base de données SQLite : liste de suivi, alertes, historique et portefeuille.
 
 SQLite range tout dans un simple fichier (bourse.db, créé à côté de ce script).
 Les données restent donc là même quand on ferme l'application.
@@ -70,6 +70,13 @@ def initialiser():
                 date_declenchement TEXT NOT NULL,
                 type               TEXT NOT NULL DEFAULT 'prix',
                 variation          REAL             -- variation du jour (%) au déclenchement, si pertinent
+            );
+            CREATE TABLE IF NOT EXISTS positions (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticker     TEXT NOT NULL,
+                quantite   REAL NOT NULL,
+                prix_achat REAL NOT NULL,
+                date_achat TEXT NOT NULL
             );
             """
         )
@@ -159,3 +166,25 @@ def lister_historique(limite=20):
             "SELECT * FROM historique_alertes ORDER BY id DESC LIMIT ?", (limite,)
         ).fetchall()
     return [dict(ligne) for ligne in lignes]
+
+
+# ---------------------------------------------------------------
+# Portefeuille (un achat = une ligne, appelée « lot »)
+# ---------------------------------------------------------------
+def ajouter_position(ticker, quantite, prix_achat):
+    with _connexion() as conn:
+        conn.execute(
+            "INSERT INTO positions (ticker, quantite, prix_achat, date_achat) VALUES (?, ?, ?, ?)",
+            (ticker, quantite, prix_achat, maintenant()),
+        )
+
+
+def lister_positions():
+    """Renvoie tous les achats enregistrés, en dictionnaires, du plus ancien au plus récent."""
+    with _connexion() as conn:
+        return [dict(ligne) for ligne in conn.execute("SELECT * FROM positions ORDER BY id").fetchall()]
+
+
+def supprimer_position(position_id):
+    with _connexion() as conn:
+        conn.execute("DELETE FROM positions WHERE id = ?", (position_id,))
