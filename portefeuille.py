@@ -62,3 +62,20 @@ def totaux_par_devise(lignes):
         t["gain"] = t["valeur"] - t["investi"]
         t["gain_pct"] = t["gain"] / t["investi"] * 100
     return totaux
+
+
+def convertir_lignes(lignes, vers, facteur_de):
+    """Convertit toutes les lignes dans une même devise, avec le taux de change du jour.
+
+    `facteur_de(devise)` donne le nombre par lequel multiplier un montant dans cette devise.
+    Les gains en % ne changent pas : le même taux est appliqué au prix d'achat et au cours actuel.
+    """
+    converties = []
+    for ligne in lignes:
+        f = facteur_de(ligne["devise"])
+        nouvelle = dict(ligne, devise=vers)
+        for cle in ("pru", "investi", "cours", "valeur", "gain"):
+            if nouvelle[cle] is not None:
+                nouvelle[cle] = nouvelle[cle] * f
+        converties.append(nouvelle)
+    return converties

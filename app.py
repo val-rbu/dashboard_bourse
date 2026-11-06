@@ -1,4 +1,4 @@
-"""Étape 12 : tableau de bord financier (indicateurs dont MACD et Bollinger, alertes dont volume anormal,
+"""Étape 13 : tableau de bord financier (indicateurs dont MACD et Bollinger, alertes dont volume anormal,
 comparaison, portefeuille, actualités, sentiment, backtest, projection, export CSV).
 
 Pour lancer l'application, dans le terminal :
@@ -14,6 +14,7 @@ Fichiers du projet :
     sentiment.py    score de sentiment des titres d'actualité
     projection.py   projection de tendance et son évaluation
     export.py       export CSV
+    devises.py      conversion euro / dollar
     portefeuille.py calculs de valeur et de gain
     database.py     base SQLite (liste de suivi, alertes, historique)
     verificateur.py vérification des alertes
@@ -29,6 +30,7 @@ import actualites
 import backtest
 import comparaison
 import database as db
+import devises
 import export
 import indicateurs as ind
 import portefeuille
@@ -110,12 +112,50 @@ def afficher_messages():
 
 
 # ---------------------------------------------------------------
+# Devise d'affichage : convertir les prix en euros ou en dollars
+# ---------------------------------------------------------------
+# cible = devise choisie (None = chaque valeur dans sa devise d'origine) ; fx = taux EUR/USD (dollars pour 1 euro)
+DEVISES_AFFICHAGE = {"Devise d'origine": None, "Euro (€)": "€", "Dollar ($)": "$"}
+cible = None
+fx = None
+
+
+def conv(donnees, ticker):
+    """Convertit des cours (tableau ou série) dans la devise d'affichage choisie."""
+    origine = devise(ticker)
+    if cible is None or cible == origine:
+        return donnees
+    if hasattr(donnees, "columns"):
+        return devises.convertir_ohlc(donnees, origine, cible, fx)
+    return devises.convertir_serie(donnees, origine, cible, fx)
+
+
+def symbole_affiche(ticker):
+    """Symbole de la devise dans laquelle le prix de cette action est affiché."""
+    return cible or devise(ticker)
+
+
+def facteur_vers_cible(ticker):
+    """Facteur de conversion (taux du jour) d'un prix de cette action vers la devise d'affichage."""
+    if cible is None:
+        return 1.0
+    return devises.facteur_actuel(devise(ticker), cible, fx)
+
+
+# ---------------------------------------------------------------
 # Colonne de gauche : la liste de suivi
 # ---------------------------------------------------------------
 liste_suivi = db.lister_watchlist()
 
 with st.sidebar:
     vue = st.radio("Vue", ["Une action", "Comparaison", "Portefeuille", "Backtest", "Projection"])
+    choix_devise = st.radio("Devise d'affichage", list(DEVISES_AFFICHAGE))
+    cible = DEVISES_AFFICHAGE[choix_devise]
+    if cible is not None:
+        fx = recuperer_cours("EURUSD=X", "10y", "1d")["Close"].dropna()
+        if fx.empty:
+            st.warning("Taux de change indisponible : prix affichés dans leur devise d'origine.")
+            cible, fx = None, None
     st.header("Ma liste de suivi")
 
     nouveau = st.text_input("Ajouter une action (ticker)", placeholder="ex. NVDA ou AIR.PA")
@@ -139,7 +179,7 @@ with st.sidebar:
             return ticker
         dernier, variation = resume
         fleche = "▲" if variation >= 0 else "▼"
-        return f"{ticker}   {dernier:.2f} {devise(ticker)}   {fleche} {variation:+.2f} %"
+        return f"{ticker}   {dernier * facteur_vers_cible(ticker):.2f} {symbole_affiche(ticker)}   {fleche} {variation:+.2f} %"
 
 
     if liste_suivi:
@@ -196,6 +236,8 @@ if vue == "Portefeuille":
         cours_actuels[t] = float(resume_t[0]) if resume_t else None
 
     lignes = portefeuille.synthese(lots, cours_actuels)
+    if cible is not None and fx is not None:
+        lignes = portefeuille.convertir_lignes(lignes, cible, lambda de: devises.facteur_actuel(de, cible, fx))
     totaux = portefeuille.totaux_par_devise(lignes)
 
     # Les totaux, une ligne par devise
@@ -261,9 +303,13 @@ if vue == "Portefeuille":
                 db.supprimer_position(lot["id"])
                 st.rerun()
 
+    if cible is None:
+        note_devise = "sans conversion euro/dollar : chaque devise est totalisée séparément (change la devise d'affichage à gauche pour tout additionner)"
+    else:
+        note_devise = f"tout est converti en {cible} au taux de change du jour (le prix d'achat aussi : l'effet du change sur ton gain n'est pas isolé)"
     st.caption(
-        "Valeurs au dernier cours connu (différé), sans frais ni conversion euro/dollar : "
-        "chaque devise est totalisée séparément. Aide à la décision, pas un conseil financier."
+        f"Valeurs au dernier cours connu (différé), sans frais, {note_devise}. "
+        "Aide à la décision, pas un conseil financier."
     )
     st.stop()
 
@@ -295,7 +341,7 @@ if vue == "Comparaison":
         if donnees.empty:
             indisponibles.append(symbole_yahoo)
         else:
-            clotures[nom_affiche(symbole_yahoo)] = donnees["Close"]
+            clotures[nom_affiche(symbole_yahoo)] = conv(donnees["Close"], symbole_yahoo)
     if indisponibles:
         st.warning("Données indisponibles pour : " + ", ".join(indisponibles))
 
@@ -325,7 +371,7 @@ if vue == "Comparaison":
     )
     st.caption(
         f"Départ commun : {courbes.index[0]:%d/%m/%Y}. Les performances sont calculées sur les cours, "
-        "dans la devise de chaque valeur, sans dividendes. Aide à la décision, pas un conseil financier."
+        f"{'converties en ' + cible if cible else 'dans la devise de chaque valeur'}, sans dividendes. Aide à la décision, pas un conseil financier."
     )
     st.stop()
 
@@ -453,14 +499,14 @@ if vue == "Projection":
     horizon = c_hor.radio("Horizon de projection", [30, 60, 90], index=0, horizontal=True, format_func=lambda j: f"{j} jours")
     jours_historique = {"6 mois": 126, "1 an": 252, "3 ans": 756}[base_choisie]
 
-    serie_proj = recuperer_cours(choix, "5y", "1d")["Close"].dropna()
+    serie_proj = conv(recuperer_cours(choix, "5y", "1d")["Close"].dropna(), choix)
     if len(serie_proj) < jours_historique + horizon + 60:
         st.warning("Historique trop court pour cette combinaison. Choisis un historique ou un horizon plus petit.")
         st.stop()
 
     resultat_proj = projection.projeter(serie_proj, jours_historique, horizon)
     previsions = resultat_proj["previsions"]
-    symbole_p = devise(choix)
+    symbole_p = symbole_affiche(choix)
     dernier_p = float(serie_proj.iloc[-1])
     centre_final = float(previsions["centre"].iloc[-1])
 
@@ -539,15 +585,20 @@ if cours.empty:
     st.stop()
 
 # Les quatre chiffres clés au-dessus du graphique
-symbole = devise(choix)
-dernier = cours["Close"].iloc[-1]
-premier = cours["Close"].iloc[0]
-variation_periode = (dernier - premier) / premier * 100
+symbole = devise(choix)              # devise de cotation : c'est elle qui sert aux alertes
+dernier = cours["Close"].iloc[-1]    # dernier cours dans la devise de cotation
+
+# Pour l'affichage (chiffres et graphique), on convertit dans la devise choisie
+cours_aff = conv(cours, choix)
+symbole_aff = symbole_affiche(choix)
+dernier_aff = cours_aff["Close"].iloc[-1]
+premier_aff = cours_aff["Close"].iloc[0]
+variation_periode = (dernier_aff - premier_aff) / premier_aff * 100
 
 c1, c2, c3, c4 = st.columns(4)
-c1.metric("Dernier cours", f"{dernier:.2f} {symbole}", f"{variation_periode:+.2f} % sur la période")
-c2.metric("Plus haut", f"{cours['High'].max():.2f} {symbole}")
-c3.metric("Plus bas", f"{cours['Low'].min():.2f} {symbole}")
+c1.metric("Dernier cours", f"{dernier_aff:.2f} {symbole_aff}", f"{variation_periode:+.2f} % sur la période")
+c2.metric("Plus haut", f"{cours_aff['High'].max():.2f} {symbole_aff}")
+c3.metric("Plus bas", f"{cours_aff['Low'].min():.2f} {symbole_aff}")
 c4.metric("Volume cumulé", f"{cours['Volume'].sum() / 1e6:.1f} M")
 
 # ---------------------------------------------------------------
@@ -560,6 +611,8 @@ serie_ma50 = serie_ma200 = serie_rsi = None
 bandes = macd_serie = None
 if afficher_ma50 or afficher_ma200 or afficher_rsi or afficher_boll or afficher_macd:
     historique = recuperer_cours(choix, "5y", "1d")["Close"].dropna()
+    if not historique.empty:
+        historique = conv(historique, choix)
     if historique.empty:
         st.warning("Historique indisponible : les indicateurs ne peuvent pas être calculés.")
         afficher_ma50 = afficher_ma200 = afficher_rsi = afficher_boll = afficher_macd = False
@@ -600,15 +653,15 @@ else:
     fig = make_subplots(rows=1, cols=1)
 
 if type_graphique == "Courbe":
-    fig.add_trace(go.Scatter(x=cours.index, y=cours["Close"], mode="lines", name="Cours"), row=1, col=1)
+    fig.add_trace(go.Scatter(x=cours_aff.index, y=cours_aff["Close"], mode="lines", name="Cours"), row=1, col=1)
 else:
     fig.add_trace(
         go.Candlestick(
-            x=cours.index,
-            open=cours["Open"],
-            high=cours["High"],
-            low=cours["Low"],
-            close=cours["Close"],
+            x=cours_aff.index,
+            open=cours_aff["Open"],
+            high=cours_aff["High"],
+            low=cours_aff["Low"],
+            close=cours_aff["Close"],
             name="Cours",
         ),
         row=1,
@@ -680,10 +733,10 @@ for alerte in db.lister_alertes(choix):
     if alerte["type"] == "prix":
         signe = "≥" if alerte["sens"] == "hausse" else "≤"
         fig.add_hline(
-            y=alerte["seuil"],
+            y=alerte["seuil"] * facteur_vers_cible(choix),   # ligne placée dans la devise d'affichage
             line_dash="dash",
             line_color="#FBBF24",
-            annotation_text=f"Alerte {signe} {alerte['seuil']:.2f}",
+            annotation_text=f"Alerte {signe} {alerte['seuil']:.2f} {symbole}",
             annotation_position="top left",
             row=1,
             col=1,
@@ -692,7 +745,7 @@ for alerte in db.lister_alertes(choix):
 fig.update_layout(
     title=f"{choix} · {periode_choisie}",
     xaxis_title="Date" if not zones else None,
-    yaxis_title=f"Prix ({symbole})",
+    yaxis_title=f"Prix ({symbole_aff})",
     template="plotly_dark",
     xaxis_rangeslider_visible=False,
     height=520 + 180 * len(zones),
@@ -705,7 +758,7 @@ if avec_rsi:
 if avec_macd:
     st.caption(f"MACD : {ind.interpreter_macd(macd_serie[0].iloc[-1], macd_serie[1].iloc[-1])}.")
 if bandes is not None and not bandes[0].empty:
-    st.caption(f"Bandes de Bollinger : cours {ind.interpreter_bollinger(float(cours['Close'].iloc[-1]), float(bandes[1].iloc[-1]), float(bandes[0].iloc[-1]))}.")
+    st.caption(f"Bandes de Bollinger : cours {ind.interpreter_bollinger(float(cours_aff['Close'].iloc[-1]), float(bandes[1].iloc[-1]), float(bandes[0].iloc[-1]))}.")
 if afficher_ma200 and (serie_ma200 is None or serie_ma200.empty):
     st.caption("MA200 indisponible : cette action n'a pas encore 200 jours d'historique.")
 
@@ -744,6 +797,8 @@ col_form, col_actives = st.columns(2)
 with col_form:
     st.subheader(f"Nouvelle alerte sur {choix}")
 
+    if cible is not None and cible != symbole:
+        st.caption(f"Les alertes de prix restent exprimées en {symbole}, la devise de cotation de {choix}.")
     type_choisi = st.radio(
         "Type d'alerte", ["Prix", "Variation du jour (%)", "RSI", "Croisement MA50/MA200", "Volume anormal"], horizontal=True
     )

@@ -69,6 +69,10 @@ def clotures_5ans(ticker):
     return recuperer_cours(ticker, "5y", "1d")["Close"].dropna()
 
 
+SUFFIXES_EURO = (".PA", ".DE", ".AS", ".MC", ".MI", ".BR", ".LS", ".HE")   # Paris, Allemagne, Amsterdam, Madrid, Milan...
+INDICES_EURO = ("^FCHI", "^GDAXI", "^STOXX50E")
+
+
 def devise(ticker):
-    """Les actions de Paris finissent par .PA et sont en euros, les autres en dollars."""
-    return "€" if ticker.endswith(".PA") else "$"
+    """Les valeurs de la zone euro (suffixe .PA, .DE...) et leurs indices sont en euros, les autres en dollars."""
+    return "€" if ticker.endswith(SUFFIXES_EURO) or ticker in INDICES_EURO else "$"
