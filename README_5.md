@@ -78,6 +78,8 @@ python verificateur.py --boucle       # vérifier les alertes toutes les 5 minut
 | `export.py` | Export CSV |
 | `devises.py` | Conversion euro / dollar |
 | `recherche.py` | Recherche d'actions par nom |
+| `style.py` | Apparence : couleurs, cartes, thème des graphiques |
+| `.streamlit/config.toml` | Thème de couleurs de l'application |
 | `database.py` | Base SQLite (liste de suivi, alertes, historique, portefeuille) |
 | `verificateur.py` | Vérification des alertes |
 | `notifications.py` | Envoi des messages Telegram |
