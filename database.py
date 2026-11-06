@@ -7,7 +7,8 @@ Types d'alertes :
 - "prix"           : le cours dépasse (hausse) ou passe sous (baisse) un seuil en devise ;
 - "variation_jour" : le cours varie d'au moins X % sur la journée (seuil = X, positif) ;
 - "rsi"            : le RSI dépasse (hausse) ou passe sous (baisse) un seuil entre 0 et 100 ;
-- "croisement_ma"  : la MA50 croise la MA200 (hausse = vers le haut, baisse = vers le bas ; seuil inutilisé, 0).
+- "croisement_ma"  : la MA50 croise la MA200 (hausse = vers le haut, baisse = vers le bas ; seuil inutilisé, 0) ;
+- "volume_anormal" : le volume du jour atteint X fois la moyenne des 20 jours précédents (sens "hausse", seuil = X).
 """
 
 import sqlite3

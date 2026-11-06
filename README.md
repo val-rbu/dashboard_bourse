@@ -9,13 +9,14 @@ Application web qui permet de suivre des actions françaises et américaines, de
 **Suivi d'une action**
 - Liste de suivi sauvegardée (ajout et retrait par ticker, par exemple `AAPL` ou `MC.PA`), avec dernier cours et variation du jour
 - Graphiques interactifs en courbe ou en chandeliers, sur 1 jour, 1 mois, 1 an ou 5 ans
-- Indicateurs techniques : moyennes mobiles 50 et 200 jours, RSI 14 jours
+- Indicateurs techniques : moyennes mobiles 50 et 200 jours, bandes de Bollinger, RSI 14 jours, MACD
 
 **Alertes** (une alerte se déclenche une fois, puis passe dans l'historique)
 - Seuil de prix, au-dessus ou en dessous (affiché sur le graphique)
 - Variation du jour en pourcentage
 - RSI en surchauffe ou en survente
 - Croisement des moyennes mobiles MA50 / MA200 (sur les 5 dernières séances)
+- Volume anormal (volume du jour égal à X fois la moyenne des 20 derniers jours)
 - Notifications Telegram
 
 **Comparaison** : plusieurs actions et indices (CAC 40, S&P 500) sur un même graphique en base 100, avec classement des performances.
@@ -66,7 +67,7 @@ python verificateur.py --boucle       # vérifier les alertes toutes les 5 minut
 |---|---|
 | `app.py` | Interface Streamlit |
 | `data.py` | Récupération des cours |
-| `indicateurs.py` | Moyennes mobiles, RSI, croisements |
+| `indicateurs.py` | Moyennes mobiles, RSI, MACD, Bollinger, volume, croisements |
 | `comparaison.py` | Courbes de base 100 |
 | `portefeuille.py` | Calculs de valeur et de gain |
 | `actualites.py` | Mise en forme des actualités et liens |
@@ -93,4 +94,3 @@ La base de données `bourse.db` est créée automatiquement au premier lancement
 
 - Comptes multi-utilisateurs
 - Vérification automatique en continu, hébergement
-- Autres indicateurs (MACD, bandes de Bollinger), alerte de volume anormal

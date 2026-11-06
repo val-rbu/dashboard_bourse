@@ -6,6 +6,8 @@ d'alertes (verificateur.py). Il ne dépend pas de Streamlit.
 
 import yfinance as yf
 
+import indicateurs as ind
+
 
 def recuperer_cours(ticker, periode="1mo", intervalle="1d"):
     """Renvoie le tableau des cours d'une action (une ligne par point)."""
@@ -37,6 +39,21 @@ def variation_jour(ticker):
     dernier = float(clotures.iloc[-1])
     precedent = float(clotures.iloc[-2])
     return dernier, (dernier - precedent) / precedent * 100
+
+
+def rapport_volume(ticker, fenetre=20):
+    """Renvoie (dernier cours, volume du jour / volume moyen des jours précédents), ou None.
+
+    Le volume du jour peut être partiel tant que la bourse est ouverte : le rapport augmente
+    donc au fil de la séance.
+    """
+    donnees = recuperer_cours(ticker, "3mo", "1d")
+    if donnees.empty:
+        return None
+    rapport = ind.rapport_volume(donnees["Volume"], fenetre)
+    if rapport is None:
+        return None
+    return float(donnees["Close"].iloc[-1]), rapport
 
 
 def actualites_brutes(ticker):

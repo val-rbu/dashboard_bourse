@@ -1,5 +1,5 @@
-"""Étape 11 : tableau de bord financier (indicateurs, alertes, comparaison, portefeuille, actualités, sentiment,
-backtest, projection, export CSV).
+"""Étape 12 : tableau de bord financier (indicateurs dont MACD et Bollinger, alertes dont volume anormal,
+comparaison, portefeuille, actualités, sentiment, backtest, projection, export CSV).
 
 Pour lancer l'application, dans le terminal :
     streamlit run app.py
@@ -65,6 +65,9 @@ INDICES = {"^FCHI": "CAC 40", "^GSPC": "S&P 500"}
 COULEUR_MA50 = "#F59E0B"
 COULEUR_MA200 = "#A78BFA"
 COULEUR_RSI = "#2DD4BF"
+COULEUR_MACD = "#60A5FA"
+COULEUR_SIGNAL = "#F97316"
+COULEUR_BOLLINGER = "#94A3B8"
 
 
 # ---------------------------------------------------------------
@@ -507,13 +510,17 @@ with col_type:
 
 # Les indicateurs sont calculés sur des clôtures journalières : pas disponibles pour 1J
 indicateurs_disponibles = periode_choisie != "1J"
-col_ma50, col_ma200, col_rsi = st.columns(3)
+col_ma50, col_ma200, col_boll, col_rsi, col_macd = st.columns(5)
 with col_ma50:
     veut_ma50 = st.checkbox("Moyenne mobile 50 jours", disabled=not indicateurs_disponibles)
 with col_ma200:
     veut_ma200 = st.checkbox("Moyenne mobile 200 jours", disabled=not indicateurs_disponibles)
+with col_boll:
+    veut_boll = st.checkbox("Bandes de Bollinger", disabled=not indicateurs_disponibles)
 with col_rsi:
     veut_rsi = st.checkbox("RSI (14 jours)", disabled=not indicateurs_disponibles)
+with col_macd:
+    veut_macd = st.checkbox("MACD", disabled=not indicateurs_disponibles)
 if not indicateurs_disponibles:
     st.caption("Les indicateurs utilisent des clôtures journalières : choisis une période de 1M ou plus.")
 
@@ -521,6 +528,8 @@ if not indicateurs_disponibles:
 afficher_ma50 = veut_ma50 and indicateurs_disponibles
 afficher_ma200 = veut_ma200 and indicateurs_disponibles
 afficher_rsi = veut_rsi and indicateurs_disponibles
+afficher_boll = veut_boll and indicateurs_disponibles
+afficher_macd = veut_macd and indicateurs_disponibles
 
 periode, intervalle = PERIODES[periode_choisie]
 cours = recuperer_cours(choix, periode, intervalle)
@@ -548,11 +557,12 @@ c4.metric("Volume cumulé", f"{cours['Volume'].sum() / 1e6:.1f} M")
 # affichée. On calcule donc les indicateurs sur 5 ans de clôtures journalières, puis on
 # ne garde que la partie visible sur le graphique.
 serie_ma50 = serie_ma200 = serie_rsi = None
-if afficher_ma50 or afficher_ma200 or afficher_rsi:
+bandes = macd_serie = None
+if afficher_ma50 or afficher_ma200 or afficher_rsi or afficher_boll or afficher_macd:
     historique = recuperer_cours(choix, "5y", "1d")["Close"].dropna()
     if historique.empty:
         st.warning("Historique indisponible : les indicateurs ne peuvent pas être calculés.")
-        afficher_ma50 = afficher_ma200 = afficher_rsi = False
+        afficher_ma50 = afficher_ma200 = afficher_rsi = afficher_boll = afficher_macd = False
     else:
         debut_affichage = cours.index[0]
 
@@ -566,15 +576,26 @@ if afficher_ma50 or afficher_ma200 or afficher_rsi:
             serie_ma200 = partie_visible(ind.moyenne_mobile(historique, 200))
         if afficher_rsi:
             serie_rsi = partie_visible(ind.rsi(historique, 14))
+        if afficher_boll:
+            milieu_b, haute_b, basse_b = ind.bollinger(historique, 20, 2)
+            bandes = (partie_visible(haute_b), partie_visible(basse_b))
+        if afficher_macd:
+            ligne_m, signal_m, histo_m = ind.macd(historique)
+            macd_serie = (partie_visible(ligne_m), partie_visible(signal_m), partie_visible(histo_m))
 
 # ---------------------------------------------------------------
 # Le graphique
 # ---------------------------------------------------------------
 avec_rsi = serie_rsi is not None and not serie_rsi.empty
+avec_macd = macd_serie is not None and not macd_serie[0].empty
 
-if avec_rsi:
-    # Deux zones superposées : le cours en haut, le RSI en bas
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.04, row_heights=[0.72, 0.28])
+# Une zone pour le cours, plus une zone en dessous pour chaque indicateur qui a sa propre échelle
+zones = (["rsi"] if avec_rsi else []) + (["macd"] if avec_macd else [])
+ligne_de = {nom: 2 + i for i, nom in enumerate(zones)}   # numéro de ligne de chaque zone
+if zones:
+    part_cours = 0.72 if len(zones) == 1 else 0.58
+    hauteurs = [part_cours] + [(1 - part_cours) / len(zones)] * len(zones)
+    fig = make_subplots(rows=1 + len(zones), cols=1, shared_xaxes=True, vertical_spacing=0.04, row_heights=hauteurs)
 else:
     fig = make_subplots(rows=1, cols=1)
 
@@ -607,15 +628,52 @@ if serie_ma200 is not None and not serie_ma200.empty:
         col=1,
     )
 
-if avec_rsi:
+if bandes is not None and not bandes[0].empty:
+    haute, basse = bandes
     fig.add_trace(
-        go.Scatter(x=serie_rsi.index, y=serie_rsi, mode="lines", name="RSI", line=dict(color=COULEUR_RSI, width=1.6)),
-        row=2,
+        go.Scatter(x=haute.index, y=haute, mode="lines", name="Bollinger haut", showlegend=False,
+                   line=dict(color=COULEUR_BOLLINGER, width=1)),
+        row=1,
         col=1,
     )
-    fig.add_hline(y=70, line_dash="dot", line_color="#9FB0CC", row=2, col=1)
-    fig.add_hline(y=30, line_dash="dot", line_color="#9FB0CC", row=2, col=1)
-    fig.update_yaxes(range=[0, 100], title_text="RSI", row=2, col=1)
+    fig.add_trace(
+        go.Scatter(x=basse.index, y=basse, mode="lines", name="Bandes de Bollinger", fill="tonexty",
+                   fillcolor="rgba(148,163,184,0.12)", line=dict(color=COULEUR_BOLLINGER, width=1)),
+        row=1,
+        col=1,
+    )
+
+if avec_rsi:
+    ligne_rsi = ligne_de["rsi"]
+    fig.add_trace(
+        go.Scatter(x=serie_rsi.index, y=serie_rsi, mode="lines", name="RSI", line=dict(color=COULEUR_RSI, width=1.6)),
+        row=ligne_rsi,
+        col=1,
+    )
+    fig.add_hline(y=70, line_dash="dot", line_color="#9FB0CC", row=ligne_rsi, col=1)
+    fig.add_hline(y=30, line_dash="dot", line_color="#9FB0CC", row=ligne_rsi, col=1)
+    fig.update_yaxes(range=[0, 100], title_text="RSI", row=ligne_rsi, col=1)
+
+if avec_macd:
+    ligne_macd = ligne_de["macd"]
+    serie_m, serie_s, serie_h = macd_serie
+    fig.add_trace(
+        go.Bar(x=serie_h.index, y=serie_h, name="Histogramme MACD",
+               marker_color=["#34D399" if v >= 0 else "#F87171" for v in serie_h]),
+        row=ligne_macd,
+        col=1,
+    )
+    fig.add_trace(
+        go.Scatter(x=serie_m.index, y=serie_m, mode="lines", name="MACD", line=dict(color=COULEUR_MACD, width=1.6)),
+        row=ligne_macd,
+        col=1,
+    )
+    fig.add_trace(
+        go.Scatter(x=serie_s.index, y=serie_s, mode="lines", name="Signal", line=dict(color=COULEUR_SIGNAL, width=1.6)),
+        row=ligne_macd,
+        col=1,
+    )
+    fig.update_yaxes(title_text="MACD", row=ligne_macd, col=1)
 
 # Une ligne pointillée jaune pour chaque alerte de prix active sur cette action
 for alerte in db.lister_alertes(choix):
@@ -633,17 +691,21 @@ for alerte in db.lister_alertes(choix):
 
 fig.update_layout(
     title=f"{choix} · {periode_choisie}",
-    xaxis_title="Date" if not avec_rsi else None,
+    xaxis_title="Date" if not zones else None,
     yaxis_title=f"Prix ({symbole})",
     template="plotly_dark",
     xaxis_rangeslider_visible=False,
-    height=700 if avec_rsi else 520,
+    height=520 + 180 * len(zones),
 )
 st.plotly_chart(fig, use_container_width=True)
 
 if avec_rsi:
     rsi_actuel = serie_rsi.iloc[-1]
     st.caption(f"RSI actuel : {rsi_actuel:.0f} · {ind.interpreter_rsi(rsi_actuel)}.")
+if avec_macd:
+    st.caption(f"MACD : {ind.interpreter_macd(macd_serie[0].iloc[-1], macd_serie[1].iloc[-1])}.")
+if bandes is not None and not bandes[0].empty:
+    st.caption(f"Bandes de Bollinger : cours {ind.interpreter_bollinger(float(cours['Close'].iloc[-1]), float(bandes[1].iloc[-1]), float(bandes[0].iloc[-1]))}.")
 if afficher_ma200 and (serie_ma200 is None or serie_ma200.empty):
     st.caption("MA200 indisponible : cette action n'a pas encore 200 jours d'historique.")
 
@@ -683,7 +745,7 @@ with col_form:
     st.subheader(f"Nouvelle alerte sur {choix}")
 
     type_choisi = st.radio(
-        "Type d'alerte", ["Prix", "Variation du jour (%)", "RSI", "Croisement MA50/MA200"], horizontal=True
+        "Type d'alerte", ["Prix", "Variation du jour (%)", "RSI", "Croisement MA50/MA200", "Volume anormal"], horizontal=True
     )
 
     if type_choisi == "RSI":
@@ -693,6 +755,14 @@ with col_form:
         seuil = st.number_input(
             "Seuil du RSI", min_value=1.0, max_value=99.0, value=70.0 if sens == "hausse" else 30.0, step=1.0, format="%.0f"
         )
+    elif type_choisi == "Volume anormal":
+        type_alerte = "volume_anormal"
+        sens = "hausse"
+        seuil = st.number_input(
+            "Volume du jour au moins égal à (× la moyenne des 20 derniers jours)",
+            min_value=1.2, max_value=10.0, value=2.0, step=0.5, format="%.1f",
+        )
+        st.caption("Le volume du jour est partiel tant que la bourse est ouverte : l'alerte peut partir en fin de séance.")
     elif type_choisi == "Croisement MA50/MA200":
         type_alerte = "croisement_ma"
         sens_choisi = st.radio("Prévenez-moi quand", ["la MA50 passe au-dessus de la MA200", "la MA50 passe sous la MA200"])
@@ -719,7 +789,7 @@ with col_form:
         # On prévient si la condition est déjà vraie : l'alerte partira à la prochaine vérification
         if type_alerte == "prix":
             deja_franchi = (dernier >= seuil) if sens == "hausse" else (dernier <= seuil)
-        elif type_alerte in ("rsi", "croisement_ma"):
+        elif type_alerte in ("rsi", "croisement_ma", "volume_anormal"):
             nouvelle = {"ticker": choix, "type": type_alerte, "sens": sens, "seuil": float(seuil)}
             mesure_actuelle = mesurer(nouvelle, {})
             deja_franchi = mesure_actuelle is not None and condition_remplie(nouvelle, mesure_actuelle)

@@ -69,3 +69,67 @@ def croisement_recent(cloture, jours=5):
         if descend[date]:
             return "baisse"
     return None
+
+
+def macd(cloture, rapide=12, lente=26, signal=9):
+    """MACD (Moving Average Convergence Divergence) : mesure l'élan de la tendance.
+
+    - ligne MACD = moyenne mobile exponentielle rapide (12 jours) - lente (26 jours) ;
+    - ligne de signal = moyenne exponentielle de la ligne MACD sur 9 jours ;
+    - histogramme = MACD - signal.
+    Quand la ligne MACD passe au-dessus de sa ligne de signal, l'élan devient haussier ;
+    quand elle passe en dessous, il devient baissier.
+    Renvoie les trois séries : (macd, signal, histogramme).
+    """
+    ligne = cloture.ewm(span=rapide, adjust=False).mean() - cloture.ewm(span=lente, adjust=False).mean()
+    ligne_signal = ligne.ewm(span=signal, adjust=False).mean()
+    return ligne, ligne_signal, ligne - ligne_signal
+
+
+def interpreter_macd(valeur_macd, valeur_signal):
+    """Traduit la position du MACD par rapport à son signal en texte."""
+    if valeur_macd > valeur_signal:
+        return "MACD au-dessus de sa ligne de signal : élan haussier"
+    return "MACD sous sa ligne de signal : élan baissier"
+
+
+def bollinger(cloture, fenetre=20, ecarts=2):
+    """Bandes de Bollinger : une enveloppe autour de la moyenne mobile 20 jours.
+
+    La bande haute (et la basse) se situe à 2 écarts-types au-dessus (en dessous) de la moyenne.
+    L'enveloppe s'élargit quand le cours devient volatil et se resserre quand il est calme.
+    Un cours qui touche la bande haute est « tendu » vers le haut ; vers le bas pour la bande basse.
+    Renvoie (milieu, bande haute, bande basse).
+    """
+    milieu = cloture.rolling(fenetre).mean()
+    ecart_type = cloture.rolling(fenetre).std(ddof=0)
+    return milieu, milieu + ecarts * ecart_type, milieu - ecarts * ecart_type
+
+
+def interpreter_bollinger(cours, bas, haut):
+    """Situe le dernier cours par rapport aux bandes."""
+    if cours > haut:
+        return "au-dessus de la bande haute (cours tendu vers le haut)"
+    if cours < bas:
+        return "sous la bande basse (cours tendu vers le bas)"
+    position = (cours - bas) / (haut - bas) if haut > bas else 0.5
+    if position > 0.8:
+        return "proche de la bande haute"
+    if position < 0.2:
+        return "proche de la bande basse"
+    return "au milieu des bandes"
+
+
+def rapport_volume(volumes, fenetre=20):
+    """Volume du dernier jour divisé par la moyenne des `fenetre` jours précédents (None si impossible).
+
+    Un rapport de 2 signifie « deux fois plus d'échanges que d'habitude » : souvent le signe
+    d'une nouvelle importante ou d'un mouvement de fond.
+    """
+    volumes = volumes.dropna()
+    if len(volumes) < fenetre + 1:
+        return None
+    moyenne = volumes.iloc[-fenetre - 1:-1].mean()
+    if moyenne <= 0:
+        return None
+    return float(volumes.iloc[-1] / moyenne)

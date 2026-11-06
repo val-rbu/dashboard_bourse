@@ -1,10 +1,11 @@
 """Vérificateur d'alertes : compare les cours actuels aux seuils des alertes actives.
 
-Quatre types d'alertes sont gérés :
+Cinq types d'alertes sont gérés :
 - « prix » : le cours dépasse ou passe sous un seuil ;
 - « variation_jour » : le cours varie d'au moins X % par rapport à la clôture précédente ;
 - « rsi » : le RSI 14 jours dépasse ou passe sous un seuil (70 = surchauffe, 30 = survente) ;
-- « croisement_ma » : la moyenne mobile 50 jours croise la moyenne mobile 200 jours.
+- « croisement_ma » : la moyenne mobile 50 jours croise la moyenne mobile 200 jours ;
+- « volume_anormal » : le volume du jour atteint X fois le volume moyen des 20 jours précédents.
 
 Deux façons de l'utiliser, dans le terminal :
     python verificateur.py             -> une vérification, puis le script s'arrête
@@ -18,7 +19,7 @@ import time
 
 import database as db
 import indicateurs as ind
-from data import clotures_5ans, dernier_prix, devise, variation_jour
+from data import clotures_5ans, dernier_prix, devise, rapport_volume, variation_jour
 from notifications import envoyer_message, expliquer_erreur, telegram_configure
 
 INTERVALLE_SECONDES = 5 * 60   # temps d'attente entre deux vérifications en mode boucle
@@ -28,6 +29,8 @@ def libelle_condition(alerte):
     """Condition d'une alerte en texte court : « ≥ 390.00 $ » ou « variation du jour ≤ −5.0 % »."""
     hausse = alerte["sens"] == "hausse"
     signe = "≥" if hausse else "≤"
+    if alerte["type"] == "volume_anormal":
+        return f"volume ≥ {alerte['seuil']:.1f} × la moyenne"
     if alerte["type"] == "croisement_ma":
         return "MA50 passe au-dessus de la MA200" if hausse else "MA50 passe sous la MA200"
     if alerte["type"] == "rsi":
@@ -43,6 +46,15 @@ def mesurer(alerte, memoire):
     `memoire` évite de demander deux fois la même chose pour la même action.
     """
     ticker = alerte["ticker"]
+
+    if alerte["type"] == "volume_anormal":
+        cle = ("volume", ticker)
+        if cle not in memoire:
+            memoire[cle] = rapport_volume(ticker)
+        resultat = memoire[cle]
+        if resultat is None:
+            return None
+        return {"cours": resultat[0], "variation": None, "volume_ratio": resultat[1]}
 
     if alerte["type"] in ("rsi", "croisement_ma"):
         cle = ("serie", ticker)
@@ -84,6 +96,8 @@ def mesurer(alerte, memoire):
 def condition_remplie(alerte, mesure):
     """Vrai si la mesure franchit le seuil de l'alerte, dans le bon sens."""
     hausse = alerte["sens"] == "hausse"
+    if alerte["type"] == "volume_anormal":
+        return mesure["volume_ratio"] >= alerte["seuil"]
     if alerte["type"] == "croisement_ma":
         return mesure["croisement"] == alerte["sens"]
     if alerte["type"] == "rsi":
@@ -99,6 +113,11 @@ def decrire(alerte, mesure):
     """Phrase lisible décrivant une alerte déclenchée."""
     ticker = alerte["ticker"]
     d = devise(ticker)
+    if alerte["type"] == "volume_anormal":
+        return (
+            f"{ticker} : {libelle_condition(alerte)} atteint "
+            f"(volume du jour {mesure['volume_ratio']:.1f} × la moyenne, cours {mesure['cours']:.2f} {d})"
+        )
     if alerte["type"] == "croisement_ma":
         return f"{ticker} : {libelle_condition(alerte)} (croisement des 5 dernières séances, cours {mesure['cours']:.2f} {d})"
     if alerte["type"] == "rsi":
