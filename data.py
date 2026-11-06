@@ -41,6 +41,33 @@ def variation_jour(ticker):
     return dernier, (dernier - precedent) / precedent * 100
 
 
+def rechercher_actions(texte, limite=10):
+    """Cherche des actions par nom ou ticker sur Yahoo Finance. Renvoie la liste brute (vide en cas de problème).
+
+    On essaie d'abord la recherche intégrée à yfinance, puis, si votre version de yfinance
+    ne l'a pas, l'adresse de recherche de Yahoo directement.
+    """
+    texte = (texte or "").strip()
+    if len(texte) < 2:
+        return []
+    try:
+        return list(yf.Search(texte, max_results=limite, news_count=0).quotes)
+    except Exception:
+        pass
+    try:
+        import requests
+
+        reponse = requests.get(
+            "https://query2.finance.yahoo.com/v1/finance/search",
+            params={"q": texte, "quotesCount": limite, "newsCount": 0},
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=6,
+        )
+        return list(reponse.json().get("quotes", []))
+    except Exception:
+        return []
+
+
 def rapport_volume(ticker, fenetre=20):
     """Renvoie (dernier cours, volume du jour / volume moyen des jours précédents), ou None.
 

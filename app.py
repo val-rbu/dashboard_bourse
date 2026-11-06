@@ -1,4 +1,4 @@
-"""Étape 13 : tableau de bord financier (indicateurs dont MACD et Bollinger, alertes dont volume anormal,
+"""Étape 14 : tableau de bord financier (indicateurs dont MACD et Bollinger, alertes dont volume anormal,
 comparaison, portefeuille, actualités, sentiment, backtest, projection, export CSV).
 
 Pour lancer l'application, dans le terminal :
@@ -15,6 +15,7 @@ Fichiers du projet :
     projection.py   projection de tendance et son évaluation
     export.py       export CSV
     devises.py      conversion euro / dollar
+    recherche.py    recherche d'actions par nom
     portefeuille.py calculs de valeur et de gain
     database.py     base SQLite (liste de suivi, alertes, historique)
     verificateur.py vérification des alertes
@@ -35,10 +36,16 @@ import export
 import indicateurs as ind
 import portefeuille
 import projection
+import recherche
 import sentiment
-from data import actualites_brutes, devise
+from data import actualites_brutes, devise, rechercher_actions
 from data import recuperer_cours as _recuperer_cours
 from notifications import telegram_configure
+try:   # champ de recherche avec liste déroulante en direct (paquet facultatif : pip install streamlit-searchbox)
+    from streamlit_searchbox import st_searchbox
+except ImportError:
+    st_searchbox = None
+
 from verificateur import condition_remplie, decrire, libelle_condition, mesurer, verifier_alertes
 
 # ---------------------------------------------------------------
@@ -84,6 +91,12 @@ def recuperer_cours(ticker, periode, intervalle):
 def liste_actualites(ticker):
     """Actualités de l'action, mises en forme (mémorisées 15 minutes)."""
     return actualites.normaliser(actualites_brutes(ticker), limite=8)
+
+
+@st.cache_data(ttl=3600)
+def chercher(texte):
+    """Phrases à proposer dans la liste déroulante pour le texte tapé (mémorisées 1 heure)."""
+    return recherche.options(texte, rechercher_actions(texte))
 
 
 @st.cache_data(ttl=300)
@@ -158,18 +171,30 @@ with st.sidebar:
             cible, fx = None, None
     st.header("Ma liste de suivi")
 
-    nouveau = st.text_input("Ajouter une action (ticker)", placeholder="ex. NVDA ou AIR.PA")
-    if st.button("Ajouter"):
-        ticker_saisi = nouveau.strip().upper()
-        if not ticker_saisi:
-            st.warning("Saisis un ticker.")
-        elif ticker_saisi in liste_suivi:
-            st.info(f"{ticker_saisi} est déjà dans la liste.")
-        elif recuperer_cours(ticker_saisi, "5d", "1d").empty:
-            st.error(f"Aucune donnée trouvée pour {ticker_saisi}. Vérifie le ticker.")
-        else:
-            db.ajouter_ticker(ticker_saisi)
-            st.rerun()
+    st.caption("Ajouter une action : tape son nom ou son ticker")
+    if st_searchbox is not None:
+        # La liste de propositions se met à jour à chaque lettre tapée
+        libelle_choisi = st_searchbox(chercher, placeholder="ex. Apple, LVMH, NVDA...", key="recherche_action")
+    else:
+        # Sans le paquet : on tape puis on valide avec Entrée, et les propositions apparaissent
+        texte_recherche = st.text_input("Rechercher", placeholder="Nom ou ticker, puis Entrée") or ""
+        propositions = chercher(texte_recherche) if len(texte_recherche.strip()) >= 2 else []
+        libelle_choisi = st.selectbox("Résultats", propositions) if propositions else None
+        if texte_recherche.strip() and not propositions:
+            st.caption("Aucun résultat.")
+
+    if libelle_choisi:
+        symbole_choisi = recherche.symbole_depuis_libelle(libelle_choisi)
+        if symbole_choisi is None:
+            st.warning("Choix non reconnu : recommence la recherche.")
+        elif symbole_choisi in liste_suivi:
+            st.caption(f"{symbole_choisi} est déjà dans ta liste.")
+        elif st.button(f"Ajouter {symbole_choisi}"):
+            if recuperer_cours(symbole_choisi, "5d", "1d").empty:
+                st.error(f"Aucune donnée de cours pour {symbole_choisi} : essaie une autre valeur.")
+            else:
+                db.ajouter_ticker(symbole_choisi)
+                st.rerun()
 
 
     def libelle(ticker):
@@ -815,7 +840,7 @@ with col_form:
         sens = "hausse"
         seuil = st.number_input(
             "Volume du jour au moins égal à (× la moyenne des 20 derniers jours)",
-            min_value=1.2, max_value=10.0, value=2.0, step=0.5, format="%.1f",
+            min_value=1.2, max_value=10.0, value=2.0, step=0.1, format="%.1f",
         )
         st.caption("Le volume du jour est partiel tant que la bourse est ouverte : l'alerte peut partir en fin de séance.")
     elif type_choisi == "Croisement MA50/MA200":
@@ -835,7 +860,7 @@ with col_form:
         type_alerte = "variation_jour"
         sens_choisi = st.radio("Prévenez-moi quand l'action", ["monte d'au moins", "baisse d'au moins"], horizontal=True)
         sens = "hausse" if sens_choisi == "monte d'au moins" else "baisse"
-        seuil = st.number_input("Variation sur la journée (%)", min_value=0.1, value=5.0, step=0.5, format="%.1f")
+        seuil = st.number_input("Variation sur la journée (%)", min_value=0.1, value=5.0, step=0.1, format="%.1f")
 
     if st.button("Créer l'alerte"):
         db.creer_alerte(choix, sens, float(seuil), type_alerte)

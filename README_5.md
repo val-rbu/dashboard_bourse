@@ -7,7 +7,8 @@ Application web qui permet de suivre des actions françaises et américaines, de
 ## Fonctionnalités
 
 **Suivi d'une action**
-- Liste de suivi sauvegardée (ajout et retrait par ticker, par exemple `AAPL` ou `MC.PA`), avec dernier cours et variation du jour
+- Liste de suivi sauvegardée (ajout et retrait ; recherche par nom ou par ticker, avec une liste de propositions qui se met à jour pendant la frappe, par exemple « apple », « lvmh » ou `NVDA`), avec dernier cours et variation du jour
+- Devise d'affichage au choix (devise d'origine, euro ou dollar) : prix, graphiques, comparaison, projection et portefeuille sont convertis avec le taux de change de chaque jour
 - Graphiques interactifs en courbe ou en chandeliers, sur 1 jour, 1 mois, 1 an ou 5 ans
 - Indicateurs techniques : moyennes mobiles 50 et 200 jours, bandes de Bollinger, RSI 14 jours, MACD
 
@@ -75,6 +76,8 @@ python verificateur.py --boucle       # vérifier les alertes toutes les 5 minut
 | `backtest.py` | Simulation de règles d'achat et de vente |
 | `projection.py` | Projection de tendance et évaluation |
 | `export.py` | Export CSV |
+| `devises.py` | Conversion euro / dollar |
+| `recherche.py` | Recherche d'actions par nom |
 | `database.py` | Base SQLite (liste de suivi, alertes, historique, portefeuille) |
 | `verificateur.py` | Vérification des alertes |
 | `notifications.py` | Envoi des messages Telegram |
@@ -88,7 +91,7 @@ La base de données `bourse.db` est créée automatiquement au premier lancement
 - Les cours viennent de `yfinance`, un service non officiel qui peut être indisponible ou changer.
 - Le sentiment compte des mots : il ne comprend ni le contexte ni l'ironie.
 - La projection et le backtest sont des outils d'analyse : le passé ne garantit pas l'avenir, et les cours sont en grande partie imprévisibles à court terme.
-- Le portefeuille ne convertit pas les euros en dollars : chaque devise est totalisée séparément.
+- La conversion de devise gère l'euro et le dollar (taux EUR/USD de Yahoo Finance). Les alertes de prix restent exprimées dans la devise de cotation. Sans conversion choisie, le portefeuille totalise chaque devise séparément.
 
 ## Suite prévue
 
