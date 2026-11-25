@@ -79,6 +79,14 @@ if os.getenv("MODE_EN_LIGNE") == "1":
 # Crée la base de données au premier lancement et la met à jour si besoin
 db.initialiser()
 
+# En ligne : on remplit la liste de départ une seule fois par visiteur. (Streamlit peut interrompre le tout premier
+# chargement ; la base existerait alors déjà, mais vide, et la liste par défaut ne serait pas créée.)
+if os.getenv("MODE_EN_LIGNE") == "1" and not st.session_state.get("liste_initialisee"):
+    if not db.lister_watchlist():
+        for ticker_depart in db.LISTE_PAR_DEFAUT:
+            db.ajouter_ticker(ticker_depart)
+    st.session_state["liste_initialisee"] = True
+
 # Pour chaque bouton de période : (durée à récupérer, intervalle entre deux points)
 PERIODES = {
     "1J": ("1d", "5m"),
