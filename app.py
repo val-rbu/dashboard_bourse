@@ -23,7 +23,12 @@ Fichiers du projet :
     style.py        apparence (couleurs, cartes, thème des graphiques)
 """
 
+import os
 import re
+import tempfile
+import time
+import uuid
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
@@ -57,6 +62,19 @@ from verificateur import condition_remplie, decrire, libelle_condition, mesurer,
 # ---------------------------------------------------------------
 st.set_page_config(page_title="Tableau de bord financier", layout="wide")
 style.appliquer()   # couleurs et cartes de la maquette
+
+# Mode « en ligne » (variable MODE_EN_LIGNE=1, réglée sur l'hébergeur) : chaque visiteur a SA propre base temporaire,
+# pour que les testeurs ne voient pas les données des autres. Elle disparaît au bout d'une journée.
+if os.getenv("MODE_EN_LIGNE") == "1":
+    if "id_visiteur" not in st.session_state:
+        st.session_state["id_visiteur"] = uuid.uuid4().hex
+        for ancien in Path(tempfile.gettempdir()).glob("bourse_visiteur_*.db"):
+            try:
+                if time.time() - ancien.stat().st_mtime > 86400:
+                    ancien.unlink()
+            except OSError:
+                pass
+    db.CHEMIN_BASE = Path(tempfile.gettempdir()) / f"bourse_visiteur_{st.session_state['id_visiteur']}.db"
 
 # Crée la base de données au premier lancement et la met à jour si besoin
 db.initialiser()
@@ -199,6 +217,9 @@ with col_devise:
             cible, fx = None, None
 
 vue = choix_boutons("Vue", VUES, VUES[0], "vue")   # les onglets du haut
+if os.getenv("MODE_EN_LIGNE") == "1":
+    st.caption("Version de démonstration : tes données (liste de suivi, portefeuille, alertes) sont privées mais temporaires. "
+               "Les notifications Telegram sont désactivées ici ; installe l'application sur ton ordinateur pour les utiliser.")
 afficher_messages()
 
 # ---------------------------------------------------------------
