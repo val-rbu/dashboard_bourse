@@ -23,6 +23,7 @@ Fichiers du projet :
     style.py        apparence (couleurs, cartes, thème des graphiques)
 """
 
+import html
 import os
 import re
 import tempfile
@@ -45,8 +46,10 @@ import indicateurs as ind
 import portefeuille
 import projection
 import recherche
+import langue
 import sentiment
 import style
+from langue import t
 from data import actualites_brutes, devise, rechercher_actions
 from data import recuperer_cours as _recuperer_cours
 from notifications import telegram_configure
@@ -57,14 +60,40 @@ except ImportError:
 
 from verificateur import condition_remplie, decrire, libelle_condition, mesurer, verifier_alertes
 
+# Streamlit relit app.py à chaque modification, mais pas toujours les fichiers qu'il importe :
+# on recharge ces fichiers-là pour que les changements d'apparence et de devises soient pris en compte.
+import importlib
+importlib.reload(style)
+importlib.reload(devises)
+importlib.reload(comparaison)
+importlib.reload(langue)
+from langue import t   # noqa: E402 (version rechargée)
+
 # ---------------------------------------------------------------
 # Réglages de la page
 # ---------------------------------------------------------------
-st.set_page_config(page_title="Tableau de bord financier", layout="wide")
-style.appliquer()   # couleurs et cartes de la maquette
+# Mode d'affichage (sombre ou clair) et langue (fr ou en), gardés pour toute la session
+st.session_state.setdefault("mode", "sombre")
+st.session_state.setdefault("langue", "fr")
+langue.LANGUE = st.session_state["langue"]
 
-# Mode « en ligne » (variable MODE_EN_LIGNE=1, réglée sur l'hébergeur) : chaque visiteur a SA propre base temporaire,
-# pour que les testeurs ne voient pas les données des autres. Elle disparaît au bout d'une journée.
+st.set_page_config(page_title=t("Tableau de bord financier"), layout="wide")
+
+# Le thème de Streamlit (boutons, champs, tableaux) est envoyé au navigateur au début de chaque
+# affichage : quand on change de mode, on règle ce thème puis on relance une fois l'affichage.
+from streamlit import config as _config_streamlit   # noqa: E402
+
+_theme_voulu = style.THEMES_STREAMLIT[st.session_state["mode"]]
+if any(_config_streamlit.get_option(f"theme.{cle}") != valeur for cle, valeur in _theme_voulu.items()):
+    for cle, valeur in _theme_voulu.items():
+        _config_streamlit.set_option(f"theme.{cle}", valeur)
+    st.rerun()
+
+style.appliquer(st.session_state["mode"])   # couleurs et cartes (palette sombre ou claire)
+
+# Crée la base de données au premier lancement et la met à jour si besoin
+# Mode « en ligne » (secret MODE_EN_LIGNE = "1" sur Streamlit Community Cloud) : chaque visiteur a SA propre base
+# temporaire, pour que les testeurs ne voient pas les données des autres. Elle disparaît au bout d'une journée.
 if os.getenv("MODE_EN_LIGNE") == "1":
     if "id_visiteur" not in st.session_state:
         st.session_state["id_visiteur"] = uuid.uuid4().hex
@@ -76,11 +105,9 @@ if os.getenv("MODE_EN_LIGNE") == "1":
                 pass
     db.CHEMIN_BASE = Path(tempfile.gettempdir()) / f"bourse_visiteur_{st.session_state['id_visiteur']}.db"
 
-# Crée la base de données au premier lancement et la met à jour si besoin
 db.initialiser()
 
-# En ligne : on remplit la liste de départ une seule fois par visiteur. (Streamlit peut interrompre le tout premier
-# chargement ; la base existerait alors déjà, mais vide, et la liste par défaut ne serait pas créée.)
+# En ligne : la liste de départ est créée une seule fois par visiteur (même si le premier chargement est interrompu)
 if os.getenv("MODE_EN_LIGNE") == "1" and not st.session_state.get("liste_initialisee"):
     if not db.lister_watchlist():
         for ticker_depart in db.LISTE_PAR_DEFAUT:
@@ -90,20 +117,22 @@ if os.getenv("MODE_EN_LIGNE") == "1" and not st.session_state.get("liste_initial
 # Pour chaque bouton de période : (durée à récupérer, intervalle entre deux points)
 PERIODES = {
     "1J": ("1d", "5m"),
+    "1S": ("5d", "30m"),
     "1M": ("1mo", "1d"),
     "1A": ("1y", "1d"),
     "5A": ("5y", "1wk"),
 }
 
 # Périodes de la vue Comparaison (pas de 1J : les horaires de Paris et New York diffèrent)
-PERIODES_COMPARAISON = {k: v for k, v in PERIODES.items() if k != "1J"}
+# Pour 1J et 1S, on compare des points dans la journée (toutes les 5 ou 30 minutes)
+PERIODES_COMPARAISON = {"1J": ("1d", "5m"), "1S": ("5d", "30m"), "1M": ("1mo", "1d"), "1A": ("1y", "1d"), "5A": ("5y", "1wk")}
 
 # Indices de référence proposés dans la vue Comparaison (symboles Yahoo Finance)
 INDICES = {"^FCHI": "CAC 40", "^GSPC": "S&P 500"}
 
 # Couleurs des courbes d'indicateurs
-COULEUR_MA50 = "#F59E0B"
-COULEUR_MA200 = "#A78BFA"
+COULEUR_MA50 = "#A78BFA"
+COULEUR_MA200 = "#F59E0B"
 COULEUR_RSI = "#2DD4BF"
 COULEUR_MACD = "#60A5FA"
 COULEUR_SIGNAL = "#F97316"
@@ -142,19 +171,26 @@ def resume_du_jour(ticker):
 
 
 def choix_boutons(label, options, defaut, cle, visible=False):
-    """Boutons côte à côte (style de la maquette). Sur une vieille version de Streamlit : boutons radio."""
+    """Boutons côte à côte (style de la maquette). Sur une vieille version de Streamlit : boutons radio.
+
+    Les options restent en français dans le code ; seul leur affichage est traduit.
+    """
     visibilite = "visible" if visible else "collapsed"
     if hasattr(st, "segmented_control"):
-        valeur = st.segmented_control(label, options, default=defaut, key=cle, label_visibility=visibilite)
+        valeur = st.segmented_control(t(label), options, default=defaut, key=cle, label_visibility=visibilite, format_func=t)
         return valeur if valeur is not None else defaut   # si on décoche, on garde le choix par défaut
-    return st.radio(label, options, index=options.index(defaut), horizontal=True, key=cle, label_visibility=visibilite)
+    return st.radio(t(label), options, index=options.index(defaut), horizontal=True, key=cle,
+                    label_visibility=visibilite, format_func=t)
 
 
-@st.cache_data(ttl=900)
-def mini_courbe(ticker):
-    """Derniers cours de clôture (environ 1 mois) pour la petite courbe de la liste de suivi."""
-    cours = recuperer_cours(ticker, "1mo", "1d")
-    return [] if cours.empty else [float(x) for x in cours["Close"].dropna()]
+def libelle(alerte):
+    """Condition d'une alerte, dans la langue de l'interface."""
+    return langue.libelle_condition(alerte, devise(alerte["ticker"]))
+
+
+def decrire_alerte(alerte, mesure):
+    """Description d'une alerte déclenchée, dans la langue de l'interface."""
+    return langue.decrire(alerte, mesure, devise(alerte["ticker"]))
 
 
 # ---------------------------------------------------------------
@@ -172,22 +208,47 @@ def afficher_messages():
 
 
 # ---------------------------------------------------------------
-# Devise d'affichage : convertir les prix en euros ou en dollars
+# Devise d'affichage : convertir les prix au taux de change du jour
 # ---------------------------------------------------------------
-# cible = devise choisie (None = chaque valeur dans sa devise d'origine) ; fx = taux EUR/USD (dollars pour 1 euro)
-DEVISES_AFFICHAGE = {"Devise d'origine": None, "Euro (€)": "€", "Dollar ($)": "$"}
-cible = None
-fx = None
+# cible = symbole de la devise choisie (None = chaque valeur dans sa devise d'origine)
+# taux = {symbole: unités pour 1 dollar}, récupérés au moment de l'affichage
+ORIGINE = "Devise d'origine"
+OPTIONS_DEVISE = [ORIGINE] + [info[1] for info in devises.DEVISES.values()]
+SYMBOLE_DE_NOM = {info[1]: sym for sym, info in devises.DEVISES.items()}
+
+
+@st.cache_data(ttl=120)
+def taux_du_jour():
+    """Taux de change actuels (mémorisés 2 minutes) : {symbole: unités pour 1 $}."""
+    taux = {}
+    for symbole_dev, symbole_yahoo in devises.symboles_yahoo().items():
+        for periode, intervalle in (("1d", "1m"), ("5d", "1d")):   # le plus récent possible, sinon la dernière clôture
+            donnees = _recuperer_cours(symbole_yahoo, periode, intervalle)
+            if not donnees.empty and donnees["Close"].dropna().size:
+                taux[symbole_dev] = float(donnees["Close"].dropna().iloc[-1])
+                break
+    return taux
+
+
+cible = SYMBOLE_DE_NOM.get(st.session_state.get("devise_choisie", ORIGINE))
+taux = {}
+if cible is not None:
+    taux = taux_du_jour()
+    if (cible != "$" and cible not in taux) or "€" not in taux:
+        ajouter_message("warning", t("Taux de change indisponible : prix affichés dans leur devise d'origine."))
+        cible = None
+
+
+def facteur_vers_cible(ticker):
+    """Facteur de conversion (taux du jour) d'un prix de cette action vers la devise d'affichage."""
+    if cible is None:
+        return 1.0
+    return devises.facteur(devise(ticker), cible, taux)
 
 
 def conv(donnees, ticker):
     """Convertit des cours (tableau ou série) dans la devise d'affichage choisie."""
-    origine = devise(ticker)
-    if cible is None or cible == origine:
-        return donnees
-    if hasattr(donnees, "columns"):
-        return devises.convertir_ohlc(donnees, origine, cible, fx)
-    return devises.convertir_serie(donnees, origine, cible, fx)
+    return devises.convertir(donnees, facteur_vers_cible(ticker))
 
 
 def symbole_affiche(ticker):
@@ -195,95 +256,190 @@ def symbole_affiche(ticker):
     return cible or devise(ticker)
 
 
-def facteur_vers_cible(ticker):
-    """Facteur de conversion (taux du jour) d'un prix de cette action vers la devise d'affichage."""
-    if cible is None:
-        return 1.0
-    return devises.facteur_actuel(devise(ticker), cible, fx)
+def _memoriser_devise(cle):
+    st.session_state["devise_choisie"] = st.session_state[cle]
+
+
+def selecteur_devise(cle):
+    """Liste déroulante des devises. Le choix est commun à toutes les vues."""
+    cle = f"{cle}_{langue.LANGUE}"   # une liste par langue : sinon le libellé affiché ne change pas de langue
+    actuel = st.session_state.get("devise_choisie", ORIGINE)
+    if cle not in st.session_state:
+        st.session_state[cle] = actuel
+    st.selectbox(t("Devise d'affichage"), OPTIONS_DEVISE, key=cle, on_change=_memoriser_devise, args=(cle,),
+                 label_visibility="collapsed", format_func=t)
 
 
 # ---------------------------------------------------------------
-# Barre du haut : titre, devise d'affichage et onglets
+# Navigation, barre du haut et liste de suivi (disposition de la maquette « refonte moderne »)
 # ---------------------------------------------------------------
+PRENOM = "Valentin"   # prénom du message d'accueil
 liste_suivi = db.lister_watchlist()
 VUES = ["Une action", "Comparaison", "Portefeuille", "Backtest", "Projection"]
+# Pour chaque vue : (nom dans la barre de navigation, icône Material de Streamlit)
+NAVIGATION = {
+    "Une action": ("Tableau de bord", ":material/space_dashboard:"),
+    "Comparaison": ("Comparaison", ":material/show_chart:"),
+    "Portefeuille": ("Portefeuille", ":material/donut_large:"),
+    "Backtest": ("Backtest", ":material/history:"),
+    "Projection": ("Projection", ":material/timeline:"),
+}
+if st.session_state.get("vue") not in VUES:
+    st.session_state["vue"] = VUES[0]
 
-col_titre, col_devise = st.columns([3, 2])
-with col_titre:
-    st.markdown(
-        '<div class="tb-entete"><h1>Tableau de bord financier</h1>'
-        '<span class="tb-pastille">Cours différés d\'environ 15 minutes · source : yfinance</span></div>',
-        unsafe_allow_html=True,
-    )
-with col_devise:
-    choix_devise = choix_boutons("Devise d'affichage", list(DEVISES_AFFICHAGE), "Devise d'origine", "devise", visible=True)
-    cible = DEVISES_AFFICHAGE[choix_devise]
-    if cible is not None:
-        fx = recuperer_cours("EURUSD=X", "10y", "1d")["Close"].dropna()
-        if fx.empty:
-            st.warning("Taux de change indisponible : prix affichés dans leur devise d'origine.")
-            cible, fx = None, None
+JOURS = ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche"]
+MOIS_COURTS = ["janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.", "déc."]
+MOIS = ["janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre", "octobre", "novembre", "décembre"]
 
-vue = choix_boutons("Vue", VUES, VUES[0], "vue")   # les onglets du haut
-if os.getenv("MODE_EN_LIGNE") == "1":
-    st.caption("Version de démonstration : tes données (liste de suivi, portefeuille, alertes) sont privées mais temporaires. "
-               "Les notifications Telegram sont désactivées ici ; installe l'application sur ton ordinateur pour les utiliser.")
+
+def nb(valeur, decimales=2):
+    """Nombre mis en forme : « 1 234,56 » en français, « 1,234.56 » en anglais."""
+    texte = f"{valeur:,.{decimales}f}"
+    if langue.LANGUE == "fr":
+        texte = texte.replace(",", " ").replace(".", ",")
+    return texte
+
+
+def bourse_ouverte(fuseau, ouverture, fermeture):
+    """Vrai si la bourse est ouverte maintenant (horaires en heures locales, du lundi au vendredi, jours fériés ignorés)."""
+    maintenant = pd.Timestamp.now(tz=fuseau)
+    minutes = maintenant.hour * 60 + maintenant.minute
+    return maintenant.weekday() < 5 and ouverture <= minutes < fermeture
+
+
+def sous_titre_accueil():
+    """« Mardi 24 novembre · Paris fermé · New York ouvert »."""
+    aujourd_hui = pd.Timestamp.now(tz="Europe/Paris")
+    date = t("{jour} {n} {mois}", jour=t(JOURS[aujourd_hui.weekday()]), n=aujourd_hui.day, mois=t(MOIS[aujourd_hui.month - 1]))
+    paris = bourse_ouverte("Europe/Paris", 9 * 60, 17 * 60 + 30)
+    new_york = bourse_ouverte("America/New_York", 9 * 60 + 30, 16 * 60)
+    return " · ".join([
+        date,
+        t("{place} ouvert", place="Paris") if paris else t("{place} fermé", place="Paris"),
+        t("{place} ouvert", place="New York") if new_york else t("{place} fermé", place="New York"),
+    ])
+
+
+@st.cache_data(ttl=86400)
+def infos_action(ticker):
+    """(nom de la société, place de cotation) d'après la recherche Yahoo, mémorisés un jour ; ("", "") si inconnus."""
+    if ticker in INDICES:
+        return INDICES[ticker], ""
+    for resultat in rechercher_actions(ticker):
+        if resultat.get("symbol") == ticker:
+            return resultat.get("shortname") or resultat.get("longname") or "", resultat.get("exchDisp") or ""
+    return "", ""
+
+
+def zone_recherche(cle):
+    """Recherche d'une action par nom ou ticker ; choisir un résultat l'ajoute à la liste de suivi et l'affiche."""
+    if st_searchbox is not None:
+        libelle_choisi = st_searchbox(chercher, placeholder=t("Rechercher une action, un indice…"), key=cle)
+    else:
+        texte_recherche = st.text_input(t("Rechercher"), placeholder=t("Rechercher une action, un indice…"), key=cle,
+                                        label_visibility="collapsed") or ""
+        propositions = chercher(texte_recherche) if len(texte_recherche.strip()) >= 2 else []
+        libelle_choisi = st.selectbox(t("Résultats"), propositions, key=cle + "_resultats",
+                                      label_visibility="collapsed") if propositions else None
+        if texte_recherche.strip() and not propositions:
+            st.caption(t("Aucun résultat."))
+    if not libelle_choisi:
+        return
+    symbole_choisi = recherche.symbole_depuis_libelle(libelle_choisi)
+    if symbole_choisi is None:
+        st.warning(t("Choix non reconnu : recommence la recherche."))
+    elif symbole_choisi in liste_suivi:
+        if st.button(t("Ouvrir {ticker}", ticker=symbole_choisi), key=cle + "_ouvrir"):
+            st.session_state.update(choix=symbole_choisi, vue="Une action")
+            st.rerun()
+    elif st.button(t("Ajouter {ticker}", ticker=symbole_choisi), key=cle + "_ajouter", type="primary"):
+        if recuperer_cours(symbole_choisi, "5d", "1d").empty:
+            st.error(t("Aucune donnée de cours pour {ticker} : essaie une autre valeur.", ticker=symbole_choisi))
+        else:
+            db.ajouter_ticker(symbole_choisi)
+            st.session_state.update(choix=symbole_choisi, vue="Une action")
+            st.rerun()
+
+
+def _changer_reglage(nom):
+    """Recopie le choix du bouton (langue) dans la session ; un clic qui désélectionne ne change rien."""
+    valeur = st.session_state[f"bouton_{nom}"]
+    if valeur is not None:
+        st.session_state[nom] = valeur
+
+
+def _basculer_theme():
+    st.session_state["mode"] = "clair" if st.session_state["mode"] == "sombre" else "sombre"
+
+
+# Barre de navigation : la barre latérale de Streamlit, réduite à une colonne d'icônes
+with st.sidebar:
+    st.markdown('<div class="tb-logo" aria-hidden="true">B</div>', unsafe_allow_html=True)
+    for numero, nom_vue in enumerate(VUES):
+        nom_nav, icone = NAVIGATION[nom_vue]
+        if st.button(t(nom_nav), key=f"nav_{numero}", icon=icone,
+                     type="primary" if st.session_state["vue"] == nom_vue else "tertiary"):
+            st.session_state["vue"] = nom_vue
+            st.rerun()
+vue = st.session_state["vue"]
+
+# Barre du haut : accueil | recherche | devise | langue | thème
+with st.container(key="barre_haut"):
+    c_salut, c_recherche, c_devise, c_langue, c_theme = st.columns([3.1, 2.7, 1.3, 0.95, 0.45], vertical_alignment="center")
+    with c_salut:
+        st.markdown(
+            f'<div class="tb-salut"><h1>{t("Bonjour {prenom}", prenom=PRENOM)}</h1><div>{sous_titre_accueil()}</div></div>',
+            unsafe_allow_html=True,
+        )
+    with c_recherche:
+        zone_recherche("recherche_haut")
+    with c_devise:
+        selecteur_devise("devise_haut")
+    with c_langue:
+        st.session_state["bouton_langue"] = st.session_state["langue"]
+        st.segmented_control(t("Langue"), ["fr", "en"], key="bouton_langue", label_visibility="collapsed",
+                             format_func=str.upper, on_change=_changer_reglage, args=("langue",))
+    with c_theme:
+        sombre = st.session_state["mode"] == "sombre"
+        st.button(t("Thème"), key="bouton_theme", icon=":material/light_mode:" if sombre else ":material/dark_mode:",
+                  help=t("Passer en mode clair") if sombre else t("Passer en mode sombre"), on_click=_basculer_theme)
+
 afficher_messages()
 
-# ---------------------------------------------------------------
-# Colonne de gauche : la liste de suivi (une carte cliquable par action)
-# ---------------------------------------------------------------
+# Liste de suivi : une rangée de cartes cliquables, puis la carte « + Ajouter »
 if liste_suivi and st.session_state.get("choix") not in liste_suivi:
     st.session_state["choix"] = liste_suivi[0]
 choix = st.session_state.get("choix") if liste_suivi else None
 
-with st.sidebar:
-    st.markdown(
-        f'<div class="tb-liste-titre"><h2>Ma liste de suivi</h2><span>{len(liste_suivi)} valeur{"s" if len(liste_suivi) > 1 else ""}</span></div>',
-        unsafe_allow_html=True,
-    )
-    for ticker_l in liste_suivi:
-        resume_l = resume_du_jour(ticker_l)
-        with st.container(key="carte_" + re.sub(r"\W", "_", ticker_l)):
-            if resume_l is None:
-                st.markdown(style.ligne_suivi(ticker_l, None, None, [], ticker_l == choix), unsafe_allow_html=True)
-            else:
-                prix_l = f"{resume_l[0] * facteur_vers_cible(ticker_l):.2f} {symbole_affiche(ticker_l)}"
-                st.markdown(style.ligne_suivi(ticker_l, prix_l, resume_l[1], mini_courbe(ticker_l), ticker_l == choix), unsafe_allow_html=True)
-            # Bouton invisible posé sur toute la carte : un clic sur la carte choisit l'action
-            if st.button(f"Choisir {ticker_l}", key=f"choisir_{ticker_l}"):
-                st.session_state["choix"] = ticker_l
-                st.rerun()
-
-    if choix is not None and st.button(f"Retirer {choix}"):
-        db.retirer_ticker(choix)   # supprime aussi ses alertes actives
-        st.rerun()
-
-    with st.expander("+ Ajouter une action"):
-        st.caption("Tape son nom ou son ticker")
-        if st_searchbox is not None:
-            # La liste de propositions se met à jour à chaque lettre tapée
-            libelle_choisi = st_searchbox(chercher, placeholder="ex. Apple, LVMH, NVDA...", key="recherche_action")
-        else:
-            # Sans le paquet : on tape puis on valide avec Entrée, et les propositions apparaissent
-            texte_recherche = st.text_input("Rechercher", placeholder="Nom ou ticker, puis Entrée") or ""
-            propositions = chercher(texte_recherche) if len(texte_recherche.strip()) >= 2 else []
-            libelle_choisi = st.selectbox("Résultats", propositions) if propositions else None
-            if texte_recherche.strip() and not propositions:
-                st.caption("Aucun résultat.")
-
-        if libelle_choisi:
-            symbole_choisi = recherche.symbole_depuis_libelle(libelle_choisi)
-            if symbole_choisi is None:
-                st.warning("Choix non reconnu : recommence la recherche.")
-            elif symbole_choisi in liste_suivi:
-                st.caption(f"{symbole_choisi} est déjà dans ta liste.")
-            elif st.button(f"Ajouter {symbole_choisi}"):
-                if recuperer_cours(symbole_choisi, "5d", "1d").empty:
-                    st.error(f"Aucune donnée de cours pour {symbole_choisi} : essaie une autre valeur.")
+PAR_RANGEE = 8
+elements_suivi = liste_suivi + ["+"]
+for debut in range(0, len(elements_suivi), PAR_RANGEE):
+    for colonne, element in zip(st.columns(PAR_RANGEE), elements_suivi[debut:debut + PAR_RANGEE]):
+        with colonne:
+            if element == "+":
+                with st.popover(t("＋ Ajouter"), key="pop_ajout", width="stretch"):
+                    zone_recherche("recherche_ajout")
+                    if choix is not None and st.button(t("Retirer {ticker} de la liste", ticker=choix), key="retirer"):
+                        db.retirer_ticker(choix)   # supprime aussi ses alertes actives
+                        st.rerun()
+                continue
+            resume_l = resume_du_jour(element)
+            with st.container(key="carte_" + re.sub(r"\W", "_", element)):
+                if resume_l is None:
+                    carte_html = style.carte_suivi(element, None, 0, "", infos_action(element)[0], element == choix)
                 else:
-                    db.ajouter_ticker(symbole_choisi)
-                    st.session_state["choix"] = symbole_choisi
+                    carte_html = style.carte_suivi(
+                        element,
+                        f"{nb(resume_l[0] * facteur_vers_cible(element))} {symbole_affiche(element)}",
+                        resume_l[1],
+                        f"{'+' if resume_l[1] >= 0 else '−'}{nb(abs(resume_l[1]))} %",
+                        infos_action(element)[0],
+                        element == choix,
+                    )
+                st.markdown(carte_html, unsafe_allow_html=True)
+                # Bouton invisible posé sur toute la carte : un clic sur la carte choisit l'action
+                if st.button(t("Choisir {ticker}", ticker=element), key=f"choisir_{element}"):
+                    st.session_state["choix"] = element   # on reste sur la vue en cours
                     st.rerun()
 
 
@@ -291,395 +447,408 @@ with st.sidebar:
 # Vue Portefeuille : mes achats, leur valeur et mon gain
 # ---------------------------------------------------------------
 if vue == "Portefeuille":
-    st.subheader("Mon portefeuille")
+    with st.container(border=True, key="vue_0"):   # la vue dans une grande carte
+        st.subheader(t("Mon portefeuille"))
 
-    if liste_suivi:
-        c_t, c_q, c_p, c_b = st.columns([2, 2, 2, 2])
-        ticker_achat = c_t.selectbox("Action", liste_suivi)
-        resume_achat = resume_du_jour(ticker_achat)
-        quantite_achat = c_q.number_input("Quantité", min_value=0.0001, value=1.0, step=1.0, format="%.4f")
-        prix_achat = c_p.number_input(
-            f"Prix d'achat ({devise(ticker_achat)})",
-            min_value=0.01,
-            value=round(float(resume_achat[0]), 2) if resume_achat else 1.0,
-            step=1.0,
-            format="%.2f",
-        )
-        c_b.write("")   # petit espace pour aligner le bouton avec les champs
-        if c_b.button("Ajouter l'achat"):
-            db.ajouter_position(ticker_achat, float(quantite_achat), float(prix_achat))
-            ajouter_message("success", f"Achat de {quantite_achat:g} {ticker_achat} enregistré.")
-            st.rerun()
-    else:
-        st.info("Ajoute d'abord une action à ta liste de suivi pour pouvoir l'acheter ici.")
+        if liste_suivi:
+            c_t, c_q, c_p, c_b = st.columns([2, 2, 2, 2])
+            ticker_achat = c_t.selectbox(t("Action"), liste_suivi)
+            resume_achat = resume_du_jour(ticker_achat)
+            quantite_achat = c_q.number_input(t("Quantité"), min_value=0.0001, value=1.0, step=1.0, format="%.4f")
+            prix_achat = c_p.number_input(
+                t("Prix d'achat ({d})", d=devise(ticker_achat)),
+                min_value=0.01,
+                value=round(float(resume_achat[0]), 2) if resume_achat else 1.0,
+                step=1.0,
+                format="%.2f",
+            )
+            c_b.write("")   # petit espace pour aligner le bouton avec les champs
+            if c_b.button(t("Ajouter l'achat")):
+                db.ajouter_position(ticker_achat, float(quantite_achat), float(prix_achat))
+                ajouter_message("success", t("Achat de {q:g} {ticker} enregistré.", q=quantite_achat, ticker=ticker_achat))
+                st.rerun()
+        else:
+            st.info(t("Ajoute d'abord une action à ta liste de suivi pour pouvoir l'acheter ici."))
 
-    lots = db.lister_positions()
-    if not lots:
-        st.info("Ton portefeuille est vide : enregistre un achat ci-dessus.")
-        st.stop()
+        lots = db.lister_positions()
+        if not lots:
+            st.info(t("Ton portefeuille est vide : enregistre un achat ci-dessus."))
+            st.stop()
 
-    # Dernier cours de chaque action détenue
-    cours_actuels = {}
-    for t in {lot["ticker"] for lot in lots}:
-        resume_t = resume_du_jour(t)
-        cours_actuels[t] = float(resume_t[0]) if resume_t else None
+        # Dernier cours de chaque action détenue
+        cours_actuels = {}
+        for tk in {lot["ticker"] for lot in lots}:
+            resume_t = resume_du_jour(tk)
+            cours_actuels[tk] = float(resume_t[0]) if resume_t else None
 
-    lignes = portefeuille.synthese(lots, cours_actuels)
-    if cible is not None and fx is not None:
-        lignes = portefeuille.convertir_lignes(lignes, cible, lambda de: devises.facteur_actuel(de, cible, fx))
-    totaux = portefeuille.totaux_par_devise(lignes)
+        lignes = portefeuille.synthese(lots, cours_actuels)
+        if cible is not None:
+            lignes = portefeuille.convertir_lignes(lignes, cible, lambda de: devises.facteur(de, cible, taux))
+        totaux = portefeuille.totaux_par_devise(lignes)
 
-    # Les totaux, une ligne par devise
-    for symbole_dev, t in totaux.items():
-        m1, m2, m3 = st.columns(3)
-        m1.metric(f"Valeur actuelle ({symbole_dev})", f"{t['valeur']:,.2f}".replace(",", " "))
-        m2.metric(f"Investi ({symbole_dev})", f"{t['investi']:,.2f}".replace(",", " "))
-        m3.metric(f"Gain ou perte ({symbole_dev})", f"{t['gain']:+,.2f}".replace(",", " "), f"{t['gain_pct']:+.2f} %")
+        # Les totaux, une ligne par devise
+        for symbole_dev, tot in totaux.items():
+            m1, m2, m3 = st.columns(3)
+            m1.metric(t("Valeur actuelle ({d})", d=symbole_dev), f"{tot['valeur']:,.2f}".replace(",", " "))
+            m2.metric(t("Investi ({d})", d=symbole_dev), f"{tot['investi']:,.2f}".replace(",", " "))
+            m3.metric(t("Gain ou perte ({d})", d=symbole_dev), f"{tot['gain']:+,.2f}".replace(",", " "), f"{tot['gain_pct']:+.2f} %")
 
-    st.dataframe(
-        [
-            {
-                "Action": l["ticker"],
-                "Quantité": f"{l['quantite']:g}",
-                "Prix d'achat moyen": f"{l['pru']:.2f} {l['devise']}",
-                "Cours actuel": f"{l['cours']:.2f} {l['devise']}" if l["cours"] is not None else "indisponible",
-                "Valeur": f"{l['valeur']:.2f} {l['devise']}" if l["valeur"] is not None else "-",
-                "Gain ou perte": (
-                    f"{l['gain']:+.2f} {l['devise']} ({l['gain_pct']:+.1f} %)" if l["gain"] is not None else "-"
-                ),
-            }
-            for l in lignes
-        ],
-        hide_index=True,
-        use_container_width=True,
-    )
-
-    st.download_button(
-        "Télécharger le portefeuille (CSV)",
-        export.vers_csv(
+        st.dataframe(
             [
                 {
-                    "Action": l["ticker"], "Devise": l["devise"], "Quantité": l["quantite"],
-                    "Prix d'achat moyen": l["pru"], "Cours actuel": l["cours"], "Valeur": l["valeur"],
-                    "Gain": l["gain"], "Gain (%)": l["gain_pct"],
+                    t("Action"): l["ticker"],
+                    t("Quantité"): f"{l['quantite']:g}",
+                    t("Prix d'achat moyen"): f"{l['pru']:.2f} {l['devise']}",
+                    t("Cours actuel"): f"{l['cours']:.2f} {l['devise']}" if l["cours"] is not None else t("indisponible"),
+                    t("Valeur"): f"{l['valeur']:.2f} {l['devise']}" if l["valeur"] is not None else "-",
+                    t("Gain ou perte"): (
+                        f"{l['gain']:+.2f} {l['devise']} ({l['gain_pct']:+.1f} %)" if l["gain"] is not None else "-"
+                    ),
                 }
                 for l in lignes
-            ]
-        ),
-        file_name="portefeuille.csv",
-        mime="text/csv",
-    )
+            ],
+            hide_index=True,
+            use_container_width=True,
+        )
 
-    # Répartition : un graphique par devise (on ne mélange pas € et $)
-    if totaux:
-        colonnes_pie = st.columns(len(totaux))
-        for colonne, symbole_dev in zip(colonnes_pie, totaux):
-            parts = [l for l in lignes if l["devise"] == symbole_dev and l["valeur"] is not None]
-            fig_pie = go.Figure(
-                go.Pie(labels=[l["ticker"] for l in parts], values=[l["valeur"] for l in parts], hole=0.45)
-            )
-            fig_pie.update_layout(title=f"Répartition ({symbole_dev})")
-            style.theme_graphique(fig_pie, 380)
-            colonne.plotly_chart(fig_pie, use_container_width=True)
+        st.download_button(
+            t("Télécharger le portefeuille (CSV)"),
+            export.vers_csv(
+                [
+                    {
+                        "Action": l["ticker"], "Devise": l["devise"], "Quantité": l["quantite"],
+                        "Prix d'achat moyen": l["pru"], "Cours actuel": l["cours"], "Valeur": l["valeur"],
+                        "Gain": l["gain"], "Gain (%)": l["gain_pct"],
+                    }
+                    for l in lignes
+                ]
+            ),
+            file_name="portefeuille.csv",
+            mime="text/csv",
+        )
 
-    with st.expander("Détail des achats"):
-        for lot in lots:
-            c_texte, c_bouton = st.columns([6, 1])
-            c_texte.write(
-                f"**{lot['ticker']}** · {lot['quantite']:g} à {lot['prix_achat']:.2f} {devise(lot['ticker'])} "
-                f"· {lot['date_achat'][:10]}"
-            )
-            if c_bouton.button("✕", key=f"suppr_lot_{lot['id']}", help="Supprimer cet achat"):
-                db.supprimer_position(lot["id"])
-                st.rerun()
+        # Répartition : un graphique par devise (on ne mélange pas € et $)
+        if totaux:
+            colonnes_pie = st.columns(len(totaux))
+            for colonne, symbole_dev in zip(colonnes_pie, totaux):
+                parts = [l for l in lignes if l["devise"] == symbole_dev and l["valeur"] is not None]
+                fig_pie = go.Figure(
+                    go.Pie(labels=[l["ticker"] for l in parts], values=[l["valeur"] for l in parts], hole=0.6,
+                           marker=dict(colors=[style.TURQUOISE, style.VIOLET, style.JAUNE, style.BLEU, style.VERT, style.ROUGE]))
+                )
+                fig_pie.update_layout(title=t("Répartition ({d})", d=symbole_dev))
+                style.theme_graphique(fig_pie, 380)
+                colonne.plotly_chart(fig_pie, use_container_width=True)
 
-    if cible is None:
-        note_devise = "sans conversion euro/dollar : chaque devise est totalisée séparément (change la devise d'affichage à gauche pour tout additionner)"
-    else:
-        note_devise = f"tout est converti en {cible} au taux de change du jour (le prix d'achat aussi : l'effet du change sur ton gain n'est pas isolé)"
-    st.caption(
-        f"Valeurs au dernier cours connu (différé), sans frais, {note_devise}. "
-        "Aide à la décision, pas un conseil financier."
-    )
-    st.stop()
+        with st.expander(t("Détail des achats")):
+            for lot in lots:
+                c_texte, c_bouton = st.columns([6, 1])
+                c_texte.write(
+                    t("**{ticker}** · {q:g} à {p:.2f} {d} · {date}", ticker=lot["ticker"], q=lot["quantite"],
+                      p=lot["prix_achat"], d=devise(lot["ticker"]), date=lot["date_achat"][:10])
+                )
+                if c_bouton.button("✕", key=f"suppr_lot_{lot['id']}", help=t("Supprimer cet achat")):
+                    db.supprimer_position(lot["id"])
+                    st.rerun()
+
+        if cible is None:
+            note_devise = t("sans conversion de devise : chaque devise est totalisée séparément (choisis une devise en haut à droite pour tout additionner)")
+        else:
+            note_devise = t("tout est converti en {d} au taux de change du jour (le prix d'achat aussi : l'effet du change sur ton gain n'est pas isolé)", d=cible)
+        st.caption(t("Valeurs au dernier cours connu (différé), sans frais, {note}. Aide à la décision, pas un conseil financier.",
+                     note=note_devise))
+        st.stop()
 
 # ---------------------------------------------------------------
 # Vue Comparaison : plusieurs actions et indices en base 100
 # ---------------------------------------------------------------
 if vue == "Comparaison":
-    def nom_affiche(symbole_yahoo):
-        return INDICES.get(symbole_yahoo, symbole_yahoo)
+    with st.container(border=True, key="vue_1"):   # la vue dans une grande carte
+        def nom_affiche(symbole_yahoo):
+            return INDICES.get(symbole_yahoo, symbole_yahoo)
 
-    st.subheader("Comparaison de performance")
-    selection = st.multiselect(
-        "Actions et indices à comparer",
-        liste_suivi + list(INDICES),
-        default=liste_suivi[:2] + ["^GSPC"],
-        format_func=nom_affiche,
-    )
-    periode_comp = st.radio("Période", list(PERIODES_COMPARAISON), index=1, horizontal=True, key="periode_comp")
+        st.subheader(t("Comparaison de performance"))
+        selection = st.multiselect(
+            t("Actions et indices à comparer"),
+            liste_suivi + list(INDICES),
+            default=liste_suivi[:2] + ["^GSPC"],
+            format_func=nom_affiche,
+        )
+        periode_comp = st.radio(t("Période"), list(PERIODES_COMPARAISON), index=2, horizontal=True, key="periode_comp", format_func=t)
 
-    if len(selection) < 2:
-        st.info("Choisis au moins deux actions ou indices à comparer.")
+        if len(selection) < 2:
+            st.info(t("Choisis au moins deux actions ou indices à comparer."))
+            st.stop()
+
+        periode_c, intervalle_c = PERIODES_COMPARAISON[periode_comp]
+        clotures = {}
+        indisponibles = []
+        for symbole_yahoo in selection:
+            donnees = recuperer_cours(symbole_yahoo, periode_c, intervalle_c)
+            if donnees.empty:
+                indisponibles.append(symbole_yahoo)
+            else:
+                clotures[nom_affiche(symbole_yahoo)] = conv(donnees["Close"], symbole_yahoo)
+        if indisponibles:
+            st.warning(t("Données indisponibles pour : {liste}", liste=", ".join(indisponibles)))
+
+        courbes = comparaison.base_100(clotures, intraday=periode_comp in ("1J", "1S"))
+        if courbes.empty or len(courbes.columns) < 2:
+            st.warning(t("Pas assez de données communes pour comparer. Réessaie dans une minute."))
+            st.stop()
+
+        fig_comp = go.Figure()
+        for nom in courbes.columns:
+            fig_comp.add_trace(go.Scatter(x=courbes.index, y=courbes[nom], mode="lines", name=nom))
+        fig_comp.add_hline(y=100, line_dash="dot", line_color=style.TEXTE_DISCRET)
+        fig_comp.update_layout(
+            title=t("Performance comparée (base 100) · {p}", p=t(periode_comp)),
+            yaxis_title=t("Base 100 au départ"),
+        )
+        style.theme_graphique(fig_comp, 520)
+        st.plotly_chart(fig_comp, use_container_width=True)
+
+        # Classement, de la meilleure à la moins bonne performance
+        performances = (courbes.iloc[-1] - 100).sort_values(ascending=False)
+        st.dataframe(
+            [{t("Valeur"): nom, t("Performance"): f"{perf:+.1f} %"} for nom, perf in performances.items()],
+            hide_index=True,
+            use_container_width=True,
+        )
+        st.caption(
+            t("Départ commun : {date}. ", date=courbes.index[0].strftime('%d/%m/%Y %H:%M UTC' if periode_comp in ('1J', '1S') else '%d/%m/%Y'))
+            + (t("Heures en temps universel (UTC) ; Paris et New York n'ouvrent pas aux mêmes heures : une courbe reste plate quand sa bourse est fermée. ")
+               if periode_comp in ("1J", "1S") else "")
+            + t("Les performances sont calculées sur les cours, sans dividendes (la devise d'affichage ne change pas une performance en %). Aide à la décision, pas un conseil financier.")
+        )
         st.stop()
-
-    periode_c, intervalle_c = PERIODES_COMPARAISON[periode_comp]
-    clotures = {}
-    indisponibles = []
-    for symbole_yahoo in selection:
-        donnees = recuperer_cours(symbole_yahoo, periode_c, intervalle_c)
-        if donnees.empty:
-            indisponibles.append(symbole_yahoo)
-        else:
-            clotures[nom_affiche(symbole_yahoo)] = conv(donnees["Close"], symbole_yahoo)
-    if indisponibles:
-        st.warning("Données indisponibles pour : " + ", ".join(indisponibles))
-
-    courbes = comparaison.base_100(clotures)
-    if courbes.empty or len(courbes.columns) < 2:
-        st.warning("Pas assez de données communes pour comparer. Réessaie dans une minute.")
-        st.stop()
-
-    fig_comp = go.Figure()
-    for nom in courbes.columns:
-        fig_comp.add_trace(go.Scatter(x=courbes.index, y=courbes[nom], mode="lines", name=nom))
-    fig_comp.add_hline(y=100, line_dash="dot", line_color="#9FB0CC")
-    fig_comp.update_layout(
-        title=f"Performance comparée (base 100) · {periode_comp}",
-        yaxis_title="Base 100 au départ",
-    )
-    style.theme_graphique(fig_comp, 520)
-    st.plotly_chart(fig_comp, use_container_width=True)
-
-    # Classement, de la meilleure à la moins bonne performance
-    performances = (courbes.iloc[-1] - 100).sort_values(ascending=False)
-    st.dataframe(
-        [{"Valeur": nom, "Performance": f"{perf:+.1f} %"} for nom, perf in performances.items()],
-        hide_index=True,
-        use_container_width=True,
-    )
-    st.caption(
-        f"Départ commun : {courbes.index[0]:%d/%m/%Y}. Les performances sont calculées sur les cours, "
-        f"{'converties en ' + cible if cible else 'dans la devise de chaque valeur'}, sans dividendes. Aide à la décision, pas un conseil financier."
-    )
-    st.stop()
 
 if choix is None:
-    st.info("Ta liste de suivi est vide : ajoute une action dans la colonne de gauche.")
+    st.info(t("Ta liste de suivi est vide : ajoute une action avec la recherche en haut."))
     st.stop()
 
 # ---------------------------------------------------------------
 # Vue Backtest : tester une règle d'achat et de vente sur le passé
 # ---------------------------------------------------------------
 if vue == "Backtest":
-    st.subheader(f"Backtest · {choix}")
-    st.caption("Que se serait-il passé si on avait appliqué une règle d'achat et de vente dans le passé ?")
+    with st.container(border=True, key="vue_2"):   # la vue dans une grande carte
+        st.subheader(t("Backtest · {ticker}", ticker=choix))
+        st.caption(t("Que se serait-il passé si on avait appliqué une règle d'achat et de vente dans le passé ?"))
 
-    regle = st.radio("Règle", ["RSI : acheter en survente, vendre en surchauffe", "Croisement de moyennes mobiles"])
-    c_a, c_b, c_c, c_d = st.columns(4)
-    if regle.startswith("RSI"):
-        seuil_achat = c_a.number_input("Acheter quand le RSI passe sous", min_value=5, max_value=50, value=30, step=1)
-        seuil_vente = c_b.number_input("Vendre quand le RSI dépasse", min_value=50, max_value=95, value=70, step=1)
-    else:
-        ma_courte = c_a.number_input("Moyenne courte (jours)", min_value=5, max_value=100, value=50, step=5)
-        ma_longue = c_b.number_input("Moyenne longue (jours)", min_value=20, max_value=400, value=200, step=10)
-        if ma_courte >= ma_longue:
-            st.warning("La moyenne courte doit être plus petite que la longue.")
+        regle = st.radio(t("Règle"), ["RSI : acheter en survente, vendre en surchauffe", "Croisement de moyennes mobiles"], format_func=t)
+        c_a, c_b, c_c, c_d = st.columns(4)
+        if regle.startswith("RSI"):
+            seuil_achat = c_a.number_input(t("Acheter quand le RSI passe sous"), min_value=5, max_value=50, value=30, step=1)
+            seuil_vente = c_b.number_input(t("Vendre quand le RSI dépasse"), min_value=50, max_value=95, value=70, step=1)
+        else:
+            ma_courte = c_a.number_input(t("Moyenne courte (jours)"), min_value=5, max_value=100, value=50, step=5)
+            ma_longue = c_b.number_input(t("Moyenne longue (jours)"), min_value=20, max_value=400, value=200, step=10)
+            if ma_courte >= ma_longue:
+                st.warning(t("La moyenne courte doit être plus petite que la longue."))
+                st.stop()
+        frais_pct = c_c.number_input(t("Frais par achat ou vente (%)"), min_value=0.0, max_value=2.0, value=0.1, step=0.05, format="%.2f")
+        duree = c_d.radio(t("Période testée"), ["1A", "3A", "5A"], index=2, horizontal=True, format_func=t)
+
+        # On charge 10 ans pour que les indicateurs soient déjà calculés au début de la période testée
+        historique_bt = recuperer_cours(choix, "10y", "1d")["Close"].dropna()
+        if len(historique_bt) < 260:
+            st.warning(t("Historique trop court pour tester une règle sur cette action."))
             st.stop()
-    frais_pct = c_c.number_input("Frais par achat ou vente (%)", min_value=0.0, max_value=2.0, value=0.1, step=0.05, format="%.2f")
-    duree = c_d.radio("Période testée", ["1A", "3A", "5A"], index=2, horizontal=True)
 
-    # On charge 10 ans pour que les indicateurs soient déjà calculés au début de la période testée
-    historique_bt = recuperer_cours(choix, "10y", "1d")["Close"].dropna()
-    if len(historique_bt) < 260:
-        st.warning("Historique trop court pour tester une règle sur cette action.")
-        st.stop()
+        if regle.startswith("RSI"):
+            signal = backtest.signal_rsi(historique_bt, seuil_achat, seuil_vente)
+        else:
+            signal = backtest.signal_croisement(historique_bt, int(ma_courte), int(ma_longue))
 
-    if regle.startswith("RSI"):
-        signal = backtest.signal_rsi(historique_bt, seuil_achat, seuil_vente)
-    else:
-        signal = backtest.signal_croisement(historique_bt, int(ma_courte), int(ma_longue))
+        annees = int(duree[0])
+        debut_test = historique_bt.index[-1] - pd.DateOffset(years=annees)
+        resultat = backtest.simuler(historique_bt, signal, debut=debut_test, frais=frais_pct / 100)
+        stats = resultat["stats"]
 
-    annees = int(duree[0])
-    debut_test = historique_bt.index[-1] - pd.DateOffset(years=annees)
-    resultat = backtest.simuler(historique_bt, signal, debut=debut_test, frais=frais_pct / 100)
-    stats = resultat["stats"]
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric(t("Avec la règle"), f"{stats['perf_strategie']:+.1f} %",
+                  t("{x:+.1f} pts vs conserver", x=stats["perf_strategie"] - stats["perf_reference"]))
+        m2.metric(t("Acheter et conserver"), f"{stats['perf_reference']:+.1f} %")
+        m3.metric(t("Transactions"), f"{stats['nb_trades']}",
+                  t("{x:.0f} % gagnantes", x=stats["taux_reussite"]) if stats["taux_reussite"] is not None else t("aucune terminée"))
+        m4.metric(t("Plus forte baisse"), f"{stats['baisse_max_strategie']:.1f} %",
+                  t("{x:.1f} % si conservé", x=stats["baisse_max_reference"]), delta_color="off")
 
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Avec la règle", f"{stats['perf_strategie']:+.1f} %",
-              f"{stats['perf_strategie'] - stats['perf_reference']:+.1f} pts vs conserver")
-    m2.metric("Acheter et conserver", f"{stats['perf_reference']:+.1f} %")
-    m3.metric("Transactions", f"{stats['nb_trades']}",
-              f"{stats['taux_reussite']:.0f} % gagnantes" if stats["taux_reussite"] is not None else "aucune terminée")
-    m4.metric("Plus forte baisse", f"{stats['baisse_max_strategie']:.1f} %",
-              f"{stats['baisse_max_reference']:.1f} % si conservé", delta_color="off")
-
-    fig_bt = go.Figure()
-    fig_bt.add_trace(go.Scatter(x=resultat["reference"].index, y=resultat["reference"], mode="lines",
-                                name="Acheter et conserver", line=dict(color="#9FB0CC", width=1.6)))
-    fig_bt.add_trace(go.Scatter(x=resultat["courbe"].index, y=resultat["courbe"], mode="lines",
-                                name="Avec la règle", line=dict(color="#2DD4BF", width=2)))
-    achats = [t["entree"] for t in resultat["trades"]]
-    ventes = [t["sortie"] for t in resultat["trades"] if not t["en_cours"]]
-    if achats:
-        fig_bt.add_trace(go.Scatter(x=achats, y=resultat["courbe"].loc[achats], mode="markers", name="Achat",
-                                    marker=dict(symbol="triangle-up", size=11, color="#34D399")))
-    if ventes:
-        fig_bt.add_trace(go.Scatter(x=ventes, y=resultat["courbe"].loc[ventes], mode="markers", name="Vente",
-                                    marker=dict(symbol="triangle-down", size=11, color="#F87171")))
-    fig_bt.update_layout(
-        title=f"{choix} · valeur d'un capital de 100 · {duree}",
-        yaxis_title="Capital (base 100)",
-    )
-    style.theme_graphique(fig_bt, 480)
-    st.plotly_chart(fig_bt, use_container_width=True)
-
-    if resultat["trades"]:
-        symbole_bt = devise(choix)
-        st.dataframe(
-            [
-                {
-                    "Achat": f"{t['entree']:%d/%m/%Y}",
-                    "Prix d'achat": f"{t['prix_entree']:.2f} {symbole_bt}",
-                    "Vente": "en cours" if t["en_cours"] else f"{t['sortie']:%d/%m/%Y}",
-                    "Prix de vente": f"{t['prix_sortie']:.2f} {symbole_bt}" + (" (dernier cours)" if t["en_cours"] else ""),
-                    "Résultat": f"{t['rendement_pct']:+.1f} %",
-                }
-                for t in reversed(resultat["trades"])
-            ],
-            hide_index=True,
-            use_container_width=True,
+        fig_bt = go.Figure()
+        fig_bt.add_trace(go.Scatter(x=resultat["reference"].index, y=resultat["reference"], mode="lines",
+                                    name=t("Acheter et conserver"), line=dict(color=style.TEXTE_DISCRET, width=1.6)))
+        fig_bt.add_trace(go.Scatter(x=resultat["courbe"].index, y=resultat["courbe"], mode="lines",
+                                    name=t("Avec la règle"), line=dict(color=style.TURQUOISE, width=2)))
+        achats = [tr["entree"] for tr in resultat["trades"]]
+        ventes = [tr["sortie"] for tr in resultat["trades"] if not tr["en_cours"]]
+        if achats:
+            fig_bt.add_trace(go.Scatter(x=achats, y=resultat["courbe"].loc[achats], mode="markers", name=t("Achat"),
+                                        marker=dict(symbol="triangle-up", size=11, color=style.VERT)))
+        if ventes:
+            fig_bt.add_trace(go.Scatter(x=ventes, y=resultat["courbe"].loc[ventes], mode="markers", name=t("Vente"),
+                                        marker=dict(symbol="triangle-down", size=11, color=style.ROUGE)))
+        fig_bt.update_layout(
+            title=t("{ticker} · valeur d'un capital de 100 · {p}", ticker=choix, p=t(duree)),
+            yaxis_title=t("Capital (base 100)"),
         )
-        st.download_button(
-            "Télécharger les transactions (CSV)",
-            export.vers_csv(
+        style.theme_graphique(fig_bt, 480)
+        st.plotly_chart(fig_bt, use_container_width=True)
+
+        if resultat["trades"]:
+            symbole_bt = devise(choix)
+            st.dataframe(
                 [
                     {
-                        "Achat": f"{t['entree']:%Y-%m-%d}", "Prix d'achat": t["prix_entree"],
-                        "Vente": "" if t["en_cours"] else f"{t['sortie']:%Y-%m-%d}", "Prix de vente": t["prix_sortie"],
-                        "Résultat (%)": t["rendement_pct"], "En cours": t["en_cours"],
+                        t("Achat"): f"{tr['entree']:%d/%m/%Y}",
+                        t("Prix d'achat"): f"{tr['prix_entree']:.2f} {symbole_bt}",
+                        t("Vente"): t("en cours") if tr["en_cours"] else f"{tr['sortie']:%d/%m/%Y}",
+                        t("Prix de vente"): f"{tr['prix_sortie']:.2f} {symbole_bt}" + (t(" (dernier cours)") if tr["en_cours"] else ""),
+                        t("Résultat"): f"{tr['rendement_pct']:+.1f} %",
                     }
-                    for t in resultat["trades"]
-                ]
-            ),
-            file_name=f"backtest_{choix}.csv",
-            mime="text/csv",
-        )
-    else:
-        st.info("La règle n'a déclenché aucune transaction sur cette période.")
+                    for tr in reversed(resultat["trades"])
+                ],
+                hide_index=True,
+                use_container_width=True,
+            )
+            st.download_button(
+                t("Télécharger les transactions (CSV)"),
+                export.vers_csv(
+                    [
+                        {
+                            "Achat": f"{tr['entree']:%Y-%m-%d}", "Prix d'achat": tr["prix_entree"],
+                            "Vente": "" if tr["en_cours"] else f"{tr['sortie']:%Y-%m-%d}", "Prix de vente": tr["prix_sortie"],
+                            "Résultat (%)": tr["rendement_pct"], "En cours": tr["en_cours"],
+                        }
+                        for tr in resultat["trades"]
+                    ]
+                ),
+                file_name=f"backtest_{choix}.csv",
+                mime="text/csv",
+            )
+        else:
+            st.info(t("La règle n'a déclenché aucune transaction sur cette période."))
 
-    st.caption(
-        f"Temps passé investi : {stats['temps_investi']:.0f} % de la période. Achats et ventes au cours de clôture du jour du signal, "
-        "capital entièrement investi, sans impôts ni dividendes. Le passé ne garantit pas l'avenir, et une règle réglée après coup "
-        "sur un historique donné peut paraître meilleure qu'elle ne le sera vraiment. Aide à la décision, pas un conseil financier."
-    )
-    st.stop()
+        st.caption(t(
+            "Temps passé investi : {x:.0f} % de la période. Achats et ventes au cours de clôture du jour du signal, "
+            "capital entièrement investi, sans impôts ni dividendes. Le passé ne garantit pas l'avenir, et une règle réglée après coup "
+            "sur un historique donné peut paraître meilleure qu'elle ne le sera vraiment. Aide à la décision, pas un conseil financier.",
+            x=stats["temps_investi"],
+        ))
+        st.stop()
 
 # ---------------------------------------------------------------
 # Vue Projection : prolonger la tendance récente (indicatif)
 # ---------------------------------------------------------------
 if vue == "Projection":
-    st.subheader(f"Projection de tendance · {choix}")
-    st.warning(
-        "Ce n'est pas une prévision : la projection prolonge simplement la tendance récente. "
-        "La mesure de fiabilité ci-dessous montre à quel point elle s'est trompée dans le passé."
-    )
-    c_hist, c_hor = st.columns(2)
-    base_choisie = c_hist.radio("Historique utilisé pour la tendance", ["6 mois", "1 an", "3 ans"], index=1, horizontal=True)
-    horizon = c_hor.radio("Horizon de projection", [30, 60, 90], index=0, horizontal=True, format_func=lambda j: f"{j} jours")
-    jours_historique = {"6 mois": 126, "1 an": 252, "3 ans": 756}[base_choisie]
+    with st.container(border=True, key="vue_3"):   # la vue dans une grande carte
+        st.subheader(t("Projection de tendance · {ticker}", ticker=choix))
+        st.warning(t(
+            "Ce n'est pas une prévision : la projection prolonge simplement la tendance récente. "
+            "La mesure de fiabilité ci-dessous montre à quel point elle s'est trompée dans le passé."
+        ))
+        c_hist, c_hor = st.columns(2)
+        base_choisie = c_hist.radio(t("Historique utilisé pour la tendance"), ["6 mois", "1 an", "3 ans"], index=1, horizontal=True, format_func=t)
+        horizon = c_hor.radio(t("Horizon de projection"), [30, 60, 90], index=0, horizontal=True, format_func=lambda j: t("{j} jours", j=j))
+        jours_historique = {"6 mois": 126, "1 an": 252, "3 ans": 756}[base_choisie]
 
-    serie_proj = conv(recuperer_cours(choix, "5y", "1d")["Close"].dropna(), choix)
-    if len(serie_proj) < jours_historique + horizon + 60:
-        st.warning("Historique trop court pour cette combinaison. Choisis un historique ou un horizon plus petit.")
+        serie_proj = conv(recuperer_cours(choix, "5y", "1d")["Close"].dropna(), choix)
+        if len(serie_proj) < jours_historique + horizon + 60:
+            st.warning(t("Historique trop court pour cette combinaison. Choisis un historique ou un horizon plus petit."))
+            st.stop()
+
+        resultat_proj = projection.projeter(serie_proj, jours_historique, horizon)
+        previsions = resultat_proj["previsions"]
+        symbole_p = symbole_affiche(choix)
+        dernier_p = float(serie_proj.iloc[-1])
+        centre_final = float(previsions["centre"].iloc[-1])
+
+        k1, k2, k3 = st.columns(3)
+        k1.metric(t("Dernier cours"), f"{dernier_p:.2f} {symbole_p}")
+        k2.metric(t("Projection à {j} jours", j=horizon), f"{centre_final:.2f} {symbole_p}", f"{(centre_final / dernier_p - 1) * 100:+.1f} %")
+        k3.metric(t("Fourchette à 95 %"), f"{previsions['bas'].iloc[-1]:.0f} – {previsions['haut'].iloc[-1]:.0f} {symbole_p}")
+
+        recent = serie_proj.iloc[-252:]
+        fig_p = go.Figure()
+        fig_p.add_trace(go.Scatter(x=recent.index, y=recent, mode="lines", name=t("Cours"), line=dict(color=style.TEXTE_DISCRET, width=1.8)))
+        fig_p.add_trace(go.Scatter(x=previsions.index, y=previsions["haut"], mode="lines", name=t("Haut 95 %"),
+                                   line=dict(width=0), showlegend=False))
+        fig_p.add_trace(go.Scatter(x=previsions.index, y=previsions["bas"], mode="lines", name=t("Fourchette à 95 %"),
+                                   line=dict(width=0), fill="tonexty", fillcolor="rgba(45,212,191,0.18)"))
+        fig_p.add_trace(go.Scatter(x=previsions.index, y=previsions["centre"], mode="lines", name=t("Projection"),
+                                   line=dict(color=style.TURQUOISE, width=2, dash="dash")))
+        fig_p.update_layout(title=t("{ticker} · projection sur {j} jours", ticker=choix, j=horizon), yaxis_title=t("Prix ({d})", d=symbole_p))
+        style.theme_graphique(fig_p, 480)
+        st.plotly_chart(fig_p, use_container_width=True)
+
+        st.subheader(t("Cette méthode s'est-elle déjà trompée ?"))
+        bilan = projection.evaluer(serie_proj, jours_historique, horizon)
+        if bilan is None:
+            st.caption(t("Historique insuffisant pour mesurer la fiabilité."))
+        else:
+            e1, e2, e3 = st.columns(3)
+            e1.metric(t("Cours réel dans la fourchette"), f"{bilan['couverture_pct']:.0f} %", t("objectif : environ 95 %"), delta_color="off")
+            e2.metric(t("Erreur moyenne de la projection"), f"{bilan['erreur_modele_pct']:.1f} %")
+            e3.metric(t("Erreur si « le cours ne bouge pas »"), f"{bilan['erreur_naive_pct']:.1f} %")
+            if bilan["erreur_modele_pct"] < bilan["erreur_naive_pct"]:
+                verdict = t("Sur cet historique, prolonger la tendance a fait un peu mieux que supposer que le cours ne bouge pas.")
+            else:
+                verdict = t("Sur cet historique, prolonger la tendance n'a pas fait mieux que supposer que le cours ne bouge pas.")
+            st.caption(t(
+                "{verdict} Test rejoué sur {n} dates du passé, avec les seules données connues à l'époque. "
+                "Les cours sont en grande partie imprévisibles à court terme : ne pas se fier à cette projection pour décider. "
+                "Aide à la décision, pas un conseil financier.",
+                verdict=verdict, n=bilan["nombre_tests"],
+            ))
         st.stop()
 
-    resultat_proj = projection.projeter(serie_proj, jours_historique, horizon)
-    previsions = resultat_proj["previsions"]
-    symbole_p = symbole_affiche(choix)
-    dernier_p = float(serie_proj.iloc[-1])
-    centre_final = float(previsions["centre"].iloc[-1])
+# ---------------------------------------------------------------
+# Vue Une action (tableau de bord) : grande carte du cours | signaux techniques et alertes,
+# puis actualités | portefeuille
+# ---------------------------------------------------------------
+LIBELLES_PERIODES = {"1J": "1 jour", "1S": "1 semaine", "1M": "1 mois", "1A": "1 an", "5A": "5 ans"}
+INDICATEURS = ["MA 50", "MA 200", "Bollinger", "RSI", "MACD"]
 
-    k1, k2, k3 = st.columns(3)
-    k1.metric("Dernier cours", f"{dernier_p:.2f} {symbole_p}")
-    k2.metric(f"Projection à {horizon} jours", f"{centre_final:.2f} {symbole_p}", f"{(centre_final / dernier_p - 1) * 100:+.1f} %")
-    k3.metric("Fourchette à 95 %", f"{previsions['bas'].iloc[-1]:.0f} – {previsions['haut'].iloc[-1]:.0f} {symbole_p}")
-
-    recent = serie_proj.iloc[-252:]
-    fig_p = go.Figure()
-    fig_p.add_trace(go.Scatter(x=recent.index, y=recent, mode="lines", name="Cours", line=dict(color="#9FB0CC", width=1.8)))
-    fig_p.add_trace(go.Scatter(x=previsions.index, y=previsions["haut"], mode="lines", name="Haut 95 %",
-                               line=dict(width=0), showlegend=False))
-    fig_p.add_trace(go.Scatter(x=previsions.index, y=previsions["bas"], mode="lines", name="Fourchette à 95 %",
-                               line=dict(width=0), fill="tonexty", fillcolor="rgba(45,212,191,0.18)"))
-    fig_p.add_trace(go.Scatter(x=previsions.index, y=previsions["centre"], mode="lines", name="Projection",
-                               line=dict(color="#2DD4BF", width=2, dash="dash")))
-    fig_p.update_layout(title=f"{choix} · projection sur {horizon} jours", yaxis_title=f"Prix ({symbole_p})")
-    style.theme_graphique(fig_p, 480)
-    st.plotly_chart(fig_p, use_container_width=True)
-
-    st.subheader("Cette méthode s'est-elle déjà trompée ?")
-    bilan = projection.evaluer(serie_proj, jours_historique, horizon)
-    if bilan is None:
-        st.caption("Historique insuffisant pour mesurer la fiabilité.")
-    else:
-        e1, e2, e3 = st.columns(3)
-        e1.metric("Cours réel dans la fourchette", f"{bilan['couverture_pct']:.0f} %", "objectif : environ 95 %", delta_color="off")
-        e2.metric("Erreur moyenne de la projection", f"{bilan['erreur_modele_pct']:.1f} %")
-        e3.metric("Erreur si « le cours ne bouge pas »", f"{bilan['erreur_naive_pct']:.1f} %")
-        if bilan["erreur_modele_pct"] < bilan["erreur_naive_pct"]:
-            verdict = "Sur cet historique, prolonger la tendance a fait un peu mieux que supposer que le cours ne bouge pas."
-        else:
-            verdict = "Sur cet historique, prolonger la tendance n'a pas fait mieux que supposer que le cours ne bouge pas."
-        st.caption(
-            f"{verdict} Test rejoué sur {bilan['nombre_tests']} dates du passé, avec les seules données connues à l'époque. "
-            "Les cours sont en grande partie imprévisibles à court terme : ne pas se fier à cette projection pour décider. "
-            "Aide à la décision, pas un conseil financier."
-        )
-    st.stop()
-
-col_centre, col_droite = st.columns([3, 1.25])   # au centre : cours et indicateurs ; à droite : alertes
-carte = col_centre.container(border=True)   # la grande carte du haut : titre, graphique et chiffres clés
+col_gauche, col_droite = st.columns([2, 1], gap="medium")
+with col_droite:
+    carte_signaux = st.container(border=True, key="bloc_signaux")
+    carte_alertes = st.container(border=True, key="bloc_alertes")
+carte = col_gauche.container(border=True, key="bloc_cours")   # la grande carte : titre, graphique et chiffres clés
 with carte:
-    zone_titre = st.container()   # remplie plus bas, quand le cours est connu
-    col_periode, col_type = st.columns(2)
-    with col_periode:
-        periode_choisie = choix_boutons("Période", list(PERIODES), "1M", "periode")
-    with col_type:
-        type_graphique = choix_boutons("Type de graphique", ["Courbe", "Chandeliers"], "Courbe", "type_graphique")
+    c_titre, c_reglages = st.columns([1.1, 1])
+    zone_titre = c_titre.container()   # remplie plus bas, quand le cours est connu
+    with c_reglages:
+        c_periode, c_type = st.columns([3.4, 1.2])
+        with c_periode:
+            periode_choisie = choix_boutons("Période", list(PERIODES), "1M", "periode")
+        with c_type:
+            type_graphique = st.segmented_control(
+                t("Type de graphique"), ["Courbe", "Chandeliers"], default="Courbe", key="type_graphique",
+                label_visibility="collapsed",
+                format_func=lambda o: ":material/show_chart:" if o == "Courbe" else ":material/candlestick_chart:",
+            ) or "Courbe"
+        # Les indicateurs sont calculés sur des clôtures journalières : pas disponibles pour 1J et 1S
+        indicateurs_disponibles = periode_choisie not in ("1J", "1S")
+        indicateurs_choisis = st.pills(
+            t("Indicateurs"), INDICATEURS, selection_mode="multi", key="indicateurs",
+            label_visibility="collapsed", disabled=not indicateurs_disponibles,
+        ) or []
+        if not indicateurs_disponibles:
+            st.caption(t("Les indicateurs utilisent des clôtures journalières : choisis une période de 1M ou plus."))
 
-# Les indicateurs sont calculés sur des clôtures journalières : pas disponibles pour 1J
-indicateurs_disponibles = periode_choisie != "1J"
-with carte:
-    col_ma50, col_ma200, col_boll, col_rsi, col_macd = st.columns(5)
-    with col_ma50:
-        veut_ma50 = st.checkbox("Moyenne mobile 50 jours", disabled=not indicateurs_disponibles)
-    with col_ma200:
-        veut_ma200 = st.checkbox("Moyenne mobile 200 jours", disabled=not indicateurs_disponibles)
-    with col_boll:
-        veut_boll = st.checkbox("Bandes de Bollinger", disabled=not indicateurs_disponibles)
-    with col_rsi:
-        veut_rsi = st.checkbox("RSI (14 jours)", disabled=not indicateurs_disponibles)
-    with col_macd:
-        veut_macd = st.checkbox("MACD", disabled=not indicateurs_disponibles)
-    if not indicateurs_disponibles:
-        st.caption("Les indicateurs utilisent des clôtures journalières : choisis une période de 1M ou plus.")
-
-# Une case grisée peut rester cochée : on ne tient compte que des cases actives
-afficher_ma50 = veut_ma50 and indicateurs_disponibles
-afficher_ma200 = veut_ma200 and indicateurs_disponibles
-afficher_rsi = veut_rsi and indicateurs_disponibles
-afficher_boll = veut_boll and indicateurs_disponibles
-afficher_macd = veut_macd and indicateurs_disponibles
+# Une pastille grisée peut rester choisie : on ne tient compte que des pastilles actives
+afficher_ma50 = "MA 50" in indicateurs_choisis and indicateurs_disponibles
+afficher_ma200 = "MA 200" in indicateurs_choisis and indicateurs_disponibles
+afficher_rsi = "RSI" in indicateurs_choisis and indicateurs_disponibles
+afficher_boll = "Bollinger" in indicateurs_choisis and indicateurs_disponibles
+afficher_macd = "MACD" in indicateurs_choisis and indicateurs_disponibles
 
 periode, intervalle = PERIODES[periode_choisie]
 cours = recuperer_cours(choix, periode, intervalle)
 
 if cours.empty:
-    st.warning("Impossible de récupérer les cours pour le moment. Réessaie dans une minute.")
+    st.warning(t("Impossible de récupérer les cours pour le moment. Réessaie dans une minute."))
     st.stop()
 
-# Les quatre chiffres clés au-dessus du graphique
 symbole = devise(choix)              # devise de cotation : c'est elle qui sert aux alertes
 dernier = cours["Close"].iloc[-1]    # dernier cours dans la devise de cotation
 
@@ -690,16 +859,16 @@ dernier_aff = cours_aff["Close"].iloc[-1]
 premier_aff = cours_aff["Close"].iloc[0]
 variation_periode = (dernier_aff - premier_aff) / premier_aff * 100
 
-# Titre de la carte : nom, prix en grand, variation colorée
-classe_var = "tb-hausse" if variation_periode >= 0 else "tb-baisse"
-fleche_var = "▲" if variation_periode >= 0 else "▼"
+# Titre de la carte : nom, place de cotation, prix en grand, variation dans une étiquette colorée
+nom_societe, place = infos_action(choix)
+puce = " · ".join(x for x in (choix, place) if x)
+hausse_periode = variation_periode >= 0
 with zone_titre:
     st.markdown(
-        f'<h2 class="tb-titre-carte">{choix}</h2>'
-        f'<div><span class="tb-prix">{dernier_aff:.2f} {symbole_aff}</span>'
-        f'<span class="{classe_var}">{fleche_var} {dernier_aff - premier_aff:+.2f} {symbole_aff} '
-        f'({variation_periode:+.2f} % sur la période)</span></div>'
-        '<div class="tb-discret">Cours différé d\'environ 15 minutes · source : yfinance</div>',
+        f'<div class="tb-nom"><h2>{html.escape(nom_societe or choix)}</h2><span class="tb-puce">{html.escape(puce)}</span></div>'
+        f'<div class="tb-ligne-prix"><span class="tb-gros-prix">{nb(dernier_aff)} {symbole_aff}</span>'
+        f'<span class="tb-badge {"hausse" if hausse_periode else "baisse"}">{"▲" if hausse_periode else "▼"} '
+        f'{nb(abs(variation_periode))} % · {t(LIBELLES_PERIODES[periode_choisie])}</span></div>',
         unsafe_allow_html=True,
     )
 
@@ -716,7 +885,7 @@ if afficher_ma50 or afficher_ma200 or afficher_rsi or afficher_boll or afficher_
     if not historique.empty:
         historique = conv(historique, choix)
     if historique.empty:
-        st.warning("Historique indisponible : les indicateurs ne peuvent pas être calculés.")
+        st.warning(t("Historique indisponible : les indicateurs ne peuvent pas être calculés."))
         afficher_ma50 = afficher_ma200 = afficher_rsi = afficher_boll = afficher_macd = False
     else:
         debut_affichage = cours.index[0]
@@ -762,8 +931,9 @@ if type_graphique == "Courbe":
         row=1, col=1,
     )
     fig.add_trace(
-        go.Scatter(x=cours_aff.index, y=cours_aff["Close"], mode="lines", name="Cours de clôture",
-                   line=dict(color=style.TURQUOISE, width=2.4), fill="tonexty", fillcolor="rgba(45,212,191,0.12)"),
+        go.Scatter(x=cours_aff.index, y=cours_aff["Close"], mode="lines", name=t("Cours de clôture"),
+                   line=dict(color=style.TURQUOISE, width=2.5), fill="tonexty",
+                   fillgradient=dict(type="vertical", colorscale=[[0, style.rgba(style.TURQUOISE, 0)], [1, style.rgba(style.TURQUOISE, 0.28)]])),
         row=1, col=1,
     )
 else:
@@ -774,7 +944,7 @@ else:
             high=cours_aff["High"],
             low=cours_aff["Low"],
             close=cours_aff["Close"],
-            name="Cours",
+            name=t("Cours"),
             increasing_line_color=style.VERT,
             decreasing_line_color=style.ROUGE,
         ),
@@ -798,13 +968,13 @@ if serie_ma200 is not None and not serie_ma200.empty:
 if bandes is not None and not bandes[0].empty:
     haute, basse = bandes
     fig.add_trace(
-        go.Scatter(x=haute.index, y=haute, mode="lines", name="Bollinger haut", showlegend=False,
+        go.Scatter(x=haute.index, y=haute, mode="lines", name=t("Bollinger haut"), showlegend=False,
                    line=dict(color=COULEUR_BOLLINGER, width=1)),
         row=1,
         col=1,
     )
     fig.add_trace(
-        go.Scatter(x=basse.index, y=basse, mode="lines", name="Bandes de Bollinger", fill="tonexty",
+        go.Scatter(x=basse.index, y=basse, mode="lines", name=t("Bandes de Bollinger"), fill="tonexty",
                    fillcolor="rgba(148,163,184,0.12)", line=dict(color=COULEUR_BOLLINGER, width=1)),
         row=1,
         col=1,
@@ -817,16 +987,16 @@ if avec_rsi:
         row=ligne_rsi,
         col=1,
     )
-    fig.add_hline(y=70, line_dash="dot", line_color="#9FB0CC", row=ligne_rsi, col=1)
-    fig.add_hline(y=30, line_dash="dot", line_color="#9FB0CC", row=ligne_rsi, col=1)
+    fig.add_hline(y=70, line_dash="dot", line_color=style.TEXTE_DISCRET, row=ligne_rsi, col=1)
+    fig.add_hline(y=30, line_dash="dot", line_color=style.TEXTE_DISCRET, row=ligne_rsi, col=1)
     fig.update_yaxes(range=[0, 100], title_text="RSI", row=ligne_rsi, col=1)
 
 if avec_macd:
     ligne_macd = ligne_de["macd"]
     serie_m, serie_s, serie_h = macd_serie
     fig.add_trace(
-        go.Bar(x=serie_h.index, y=serie_h, name="Histogramme MACD",
-               marker_color=["#34D399" if v >= 0 else "#F87171" for v in serie_h]),
+        go.Bar(x=serie_h.index, y=serie_h, name=t("Histogramme MACD"),
+               marker_color=[style.VERT if v >= 0 else style.ROUGE for v in serie_h]),
         row=ligne_macd,
         col=1,
     )
@@ -836,7 +1006,7 @@ if avec_macd:
         col=1,
     )
     fig.add_trace(
-        go.Scatter(x=serie_s.index, y=serie_s, mode="lines", name="Signal", line=dict(color=COULEUR_SIGNAL, width=1.6)),
+        go.Scatter(x=serie_s.index, y=serie_s, mode="lines", name=t("Signal"), line=dict(color=COULEUR_SIGNAL, width=1.6)),
         row=ligne_macd,
         col=1,
     )
@@ -850,7 +1020,7 @@ for alerte in db.lister_alertes(choix):
             y=alerte["seuil"] * facteur_vers_cible(choix),   # ligne placée dans la devise d'affichage
             line_dash="dash",
             line_color=style.JAUNE,
-            annotation_text=f"Seuil d'alerte {signe} {alerte['seuil']:.2f} {symbole}",
+            annotation_text=t("Seuil d'alerte {signe} {x:.2f} {d}", signe=signe, x=alerte["seuil"], d=symbole),
             annotation_position="top right",
             annotation_font_color=style.JAUNE,
             row=1,
@@ -858,184 +1028,175 @@ for alerte in db.lister_alertes(choix):
         )
 
 fig.update_layout(
-    yaxis_title=f"Prix ({symbole_aff})",
+    yaxis_title=t("Prix ({d})", d=symbole_aff),
     xaxis_rangeslider_visible=False,
 )
-style.theme_graphique(fig, 460 + 180 * len(zones))
+style.theme_graphique(fig, 320 + 170 * len(zones))
+fig.update_layout(
+    legend=dict(orientation="h", yanchor="top", y=-0.2, xanchor="left", x=0),   # légende sous le graphique
+    margin=dict(l=10, r=10, t=10, b=40),
+)
 with carte:
     st.plotly_chart(fig, use_container_width=True)
 
     # Les quatre chiffres clés sous le graphique
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Début de période", f"{cours_aff['Open'].iloc[0]:.2f} {symbole_aff}")
-    c2.metric("Plus haut", f"{cours_aff['High'].max():.2f} {symbole_aff}")
-    c3.metric("Plus bas", f"{cours_aff['Low'].min():.2f} {symbole_aff}")
-    c4.metric("Volume cumulé", f"{cours['Volume'].sum() / 1e6:.1f} M")
+    chiffres = [
+        (t("Début de période"), f"{nb(cours_aff['Open'].iloc[0])} {symbole_aff}"),
+        (t("Plus haut"), f"{nb(cours_aff['High'].max())} {symbole_aff}"),
+        (t("Plus bas"), f"{nb(cours_aff['Low'].min())} {symbole_aff}"),
+        (t("Volume cumulé"), f"{nb(cours['Volume'].sum() / 1e6, 1)} M"),
+    ]
+    st.markdown(
+        '<div class="tb-stats">'
+        + "".join(f'<div class="tb-stat"><div>{libelle_c}</div><div>{valeur_c}</div></div>' for libelle_c, valeur_c in chiffres)
+        + "</div>",
+        unsafe_allow_html=True,
+    )
 
-# Carte « Indicateurs techniques » : l'état actuel, quelle que soit la période affichée
-with col_centre.container(border=True):
-    st.markdown('<h2 class="tb-titre-carte">Indicateurs techniques</h2>', unsafe_allow_html=True)
-    hist5 = recuperer_cours(choix, "5y", "1d")
-    clotures5 = hist5["Close"].dropna() if not hist5.empty else None
-    t_rsi, t_ma, t_vol = st.columns(3)
-
-    with t_rsi, st.container(border=True):
-        valeur_rsi = None
-        if clotures5 is not None and len(clotures5) > 30:
-            serie_r = ind.rsi(clotures5, 14).dropna()
-            valeur_rsi = float(serie_r.iloc[-1]) if not serie_r.empty else None
-        if valeur_rsi is None:
-            st.markdown(style.tuile("RSI (14 jours)", "n.d."), unsafe_allow_html=True)
-        else:
-            etat = "Survente" if valeur_rsi <= 30 else "Surchauffe" if valeur_rsi >= 70 else "Neutre"
-            st.markdown(
-                style.tuile("RSI (14 jours)", f"{valeur_rsi:.0f}", etat, barre=valeur_rsi, bornes=("Survente 30", "Surchauffe 70")),
-                unsafe_allow_html=True,
-            )
-
-    with t_ma, st.container(border=True):
-        if clotures5 is not None and len(clotures5) >= 200:
-            m50 = float(ind.moyenne_mobile(clotures5, 50).iloc[-1])
-            m200 = float(ind.moyenne_mobile(clotures5, 200).iloc[-1])
-            haussier = m50 > m200
-            st.markdown(
-                style.tuile("Moyennes mobiles", "MA50 " + ("au-dessus" if haussier else "sous") + " la MA200",
-                            ("▲ Tendance haussière" if haussier else "▼ Tendance baissière"),
-                            "tb-hausse" if haussier else "tb-baisse"),
-                unsafe_allow_html=True,
-            )
-        else:
-            st.markdown(style.tuile("Moyennes mobiles", "n.d.", "Moins de 200 jours d'historique"), unsafe_allow_html=True)
-
-    with t_vol, st.container(border=True):
-        rapport_vol = ind.rapport_volume(hist5["Volume"], 20) if clotures5 is not None else None
-        if rapport_vol is None:
-            st.markdown(style.tuile("Volume vs moyenne 20 jours", "n.d."), unsafe_allow_html=True)
-        else:
-            avis = "Volume élevé" if rapport_vol >= 1.5 else "Volume faible" if rapport_vol <= 0.6 else "Dans la norme"
-            st.markdown(style.tuile("Volume vs moyenne 20 jours", f"{(rapport_vol - 1) * 100:+.0f} %", avis), unsafe_allow_html=True)
-
-with carte:
     if avec_rsi:
         rsi_actuel = serie_rsi.iloc[-1]
-        st.caption(f"RSI actuel : {rsi_actuel:.0f} · {ind.interpreter_rsi(rsi_actuel)}.")
+        st.caption(t("RSI actuel : {x:.0f} · {texte}.", x=rsi_actuel, texte=t(ind.interpreter_rsi(rsi_actuel))))
     if avec_macd:
-        st.caption(f"MACD : {ind.interpreter_macd(macd_serie[0].iloc[-1], macd_serie[1].iloc[-1])}.")
+        st.caption(t("MACD : {texte}.", texte=t(ind.interpreter_macd(macd_serie[0].iloc[-1], macd_serie[1].iloc[-1]))))
     if bandes is not None and not bandes[0].empty:
-        st.caption(f"Bandes de Bollinger : cours {ind.interpreter_bollinger(float(cours_aff['Close'].iloc[-1]), float(bandes[1].iloc[-1]), float(bandes[0].iloc[-1]))}.")
+        st.caption(t("Bandes de Bollinger : cours {texte}.", texte=t(ind.interpreter_bollinger(float(cours_aff['Close'].iloc[-1]), float(bandes[1].iloc[-1]), float(bandes[0].iloc[-1])))))
     if afficher_ma200 and (serie_ma200 is None or serie_ma200.empty):
-        st.caption("MA200 indisponible : cette action n'a pas encore 200 jours d'historique.")
+        st.caption(t("MA200 indisponible : cette action n'a pas encore 200 jours d'historique."))
 
 # ---------------------------------------------------------------
-# Les actualités
+# Signaux techniques : l'état actuel, quelle que soit la période affichée
 # ---------------------------------------------------------------
-with col_centre.container(border=True):
-    st.markdown(f'<h2 class="tb-titre-carte">Actualités · {choix}</h2>', unsafe_allow_html=True)
-    articles = liste_actualites(choix)
-    if not articles:
-        st.caption("Aucune actualité disponible pour le moment (la source peut être indisponible).")
-    scores = [sentiment.score_titre(a["titre"]) for a in articles]
-    resume_sentiment = sentiment.synthese(scores)
-    if resume_sentiment:
-        st.caption(
-            f"Sentiment des titres : **{resume_sentiment['etiquette']}** ({resume_sentiment['moyenne']:+.2f}) · "
-            f"🟢 {resume_sentiment['positifs']} · ⚪ {resume_sentiment['neutres']} · 🔴 {resume_sentiment['negatifs']}"
-        )
-    for article, score in zip(articles, scores):
-        st.markdown(f"{sentiment.pastille(score)} **{actualites.lien_markdown(article['titre'], article['lien'])}**")
-        ligne = " · ".join(x for x in (article["source"], actualites.depuis(article["date"])) if x)
-        if ligne:
-            st.caption(ligne)
-    if articles:
-        st.caption(
-            "Articles en général rédigés en anglais, fournis par Yahoo Finance : cliquer sur un titre ouvre l'article d'origine. "
-            "Le sentiment est un simple décompte de mots positifs et négatifs dans le titre : indicatif, il ne comprend pas le contexte."
-        )
+with carte_signaux:
+    st.markdown(f'<div class="tb-titre"><h2>{t("Signaux techniques")}</h2></div>', unsafe_allow_html=True)
+    hist5 = recuperer_cours(choix, "5y", "1d")
+    clotures5 = hist5["Close"].dropna() if not hist5.empty else None
+    lignes_signaux = []
 
-# ---------------------------------------------------------------
-# Colonne de droite : les alertes
-# ---------------------------------------------------------------
-with col_droite:
-    carte_alertes = st.container(border=True)
-    carte_historique = st.container(border=True)
-
-with carte_alertes:
-    st.markdown('<h2 class="tb-titre-carte">Alertes actives</h2>', unsafe_allow_html=True)
-    alertes = db.lister_alertes()
-    if not alertes:
-        st.caption("Aucune alerte pour le moment.")
-    for alerte in alertes:
-        with st.container(border=True):
-            c_texte, c_bouton = st.columns([5, 1])
-            c_texte.write(f"**{alerte['ticker']}**  {libelle_condition(alerte)}")
-            if c_bouton.button("✕", key=f"suppr_{alerte['id']}", help="Supprimer cette alerte"):
-                db.supprimer_alerte(alerte["id"])
-                st.rerun()
-
-    if alertes and st.button("Vérifier les alertes maintenant"):
-        declenchees, echecs = verifier_alertes()
-        for alerte, mesure, information in declenchees:
-            ajouter_message("warning", f"Alerte déclenchée · {decrire(alerte, mesure)} ({information})")
-        for alerte, mesure, explication in echecs:
-            ajouter_message(
-                "error",
-                f"Seuil franchi · {decrire(alerte, mesure)}, mais le message Telegram n'est pas parti : "
-                f"{explication} L'alerte reste active.",
-            )
-        if not declenchees and not echecs:
-            ajouter_message("success", "Vérification faite : aucun seuil n'est franchi.")
-        st.rerun()
-
-    if telegram_configure():
-        st.caption("Notifications Telegram : activées.")
+    # RSI : jauge circulaire
+    valeur_rsi = None
+    if clotures5 is not None and len(clotures5) > 30:
+        serie_r = ind.rsi(clotures5, 14).dropna()
+        valeur_rsi = float(serie_r.iloc[-1]) if not serie_r.empty else None
+    if valeur_rsi is None:
+        bloc_rsi = f'<div class="tb-rsi">{style.anneau(0, "–", style.BORDURE, aria="RSI")}<div><b>RSI</b> · {t("n.d.")}</div></div>'
     else:
-        st.caption("Notifications Telegram : non configurées (fichier .env à créer).")
+        if valeur_rsi <= 30:
+            etat, detail, couleur = t("survente"), t("Sous 30 : l'action a beaucoup baissé récemment"), style.JAUNE
+        elif valeur_rsi >= 70:
+            etat, detail, couleur = t("surchauffe"), t("Au-dessus de 70 : l'action a beaucoup monté récemment"), style.JAUNE
+        else:
+            etat, detail, couleur = t("neutre"), t("Ni survente (30) ni surchauffe (70)"), style.TURQUOISE
+        bloc_rsi = (
+            f'<div class="tb-rsi">{style.anneau(valeur_rsi, f"{valeur_rsi:.0f}", couleur, aria=f"RSI {valeur_rsi:.0f} / 100")}'
+            f'<div><b>{t("RSI 14 j · {etat}", etat=etat)}</b><div class="tb-discret" style="margin-top:4px">{detail}</div></div></div>'
+        )
 
-    with st.expander(f"+ Nouvelle alerte sur {choix}"):
+    # Moyennes mobiles, volume et MACD : une ligne chacun
+    if clotures5 is not None and len(clotures5) >= 200:
+        m50 = float(ind.moyenne_mobile(clotures5, 50).iloc[-1])
+        m200 = float(ind.moyenne_mobile(clotures5, 200).iloc[-1])
+        haussier = m50 > m200
+        lignes_signaux.append((t("Moyennes mobiles"), "▲ MA50 &gt; MA200" if haussier else "▼ MA50 &lt; MA200",
+                               style.VERT if haussier else style.ROUGE))
+    else:
+        lignes_signaux.append((t("Moyennes mobiles"), t("n.d."), style.TEXTE_DISCRET))
+    rapport_vol = ind.rapport_volume(hist5["Volume"], 20) if clotures5 is not None else None
+    if rapport_vol is None:
+        lignes_signaux.append((t("Volume vs 20 j"), t("n.d."), style.TEXTE_DISCRET))
+    else:
+        avis = t("élevé") if rapport_vol >= 1.5 else t("faible") if rapport_vol <= 0.6 else t("normal")
+        inhabituel = rapport_vol >= 1.5 or rapport_vol <= 0.6
+        lignes_signaux.append((t("Volume vs 20 j"), f"{'+' if rapport_vol >= 1 else '−'}{nb(abs(rapport_vol - 1) * 100, 0)} % · {avis}",
+                               style.JAUNE if inhabituel else style.TEXTE))
+    if clotures5 is not None and len(clotures5) > 40:
+        ligne_m5, signal_m5, _ = ind.macd(clotures5)
+        elan_haussier = float(ligne_m5.iloc[-1]) > float(signal_m5.iloc[-1])
+        lignes_signaux.append(("MACD", t("▲ élan haussier") if elan_haussier else t("▼ élan baissier"),
+                               style.VERT if elan_haussier else style.ROUGE))
+    st.markdown(
+        bloc_rsi + "".join(
+            f'<div class="tb-ligne"><span>{nom_s}</span><span style="color:{couleur_s}">{valeur_s}</span></div>'
+            for nom_s, valeur_s, couleur_s in lignes_signaux
+        ),
+        unsafe_allow_html=True,
+    )
 
+# ---------------------------------------------------------------
+# Alertes : actives (toutes les actions), dernières déclenchées, création
+# ---------------------------------------------------------------
+with carte_alertes:
+    etat_telegram = (f'<span style="color:{style.VERT};font-size:12px">{t("● Telegram connecté")}</span>' if telegram_configure()
+                     else f'<span class="tb-discret">{t("○ Telegram non configuré (fichier .env)")}</span>')
+    st.markdown(f'<div class="tb-titre"><h2>{t("Alertes")}</h2>{etat_telegram}</div>', unsafe_allow_html=True)
+    alertes = db.lister_alertes()
+    historique_alertes = db.lister_historique()
+    if not alertes and not historique_alertes:
+        st.caption(t("Aucune alerte pour le moment."))
+    for alerte in alertes:
+        c_texte, c_bouton = st.columns([7, 1], vertical_alignment="center")
+        c_texte.markdown(
+            f'<div class="tb-alerte"><span class="tb-point" style="background:{style.JAUNE}"></span>'
+            f'<span class="tb-txt"><b>{alerte["ticker"]}</b> {html.escape(libelle(alerte))}</span>'
+            f'<span class="tb-discret">{t("active")}</span></div>',
+            unsafe_allow_html=True,
+        )
+        if c_bouton.button("✕", key=f"suppr_{alerte['id']}", help=t("Supprimer cette alerte"), type="tertiary"):
+            db.supprimer_alerte(alerte["id"])
+            st.rerun()
+    for h in historique_alertes[:2]:   # les deux dernières alertes déclenchées
+        date_h = pd.Timestamp(h["date_declenchement"])
+        st.markdown(
+            f'<div class="tb-alerte" style="margin-top:8px"><span class="tb-point" style="background:{style.VERT}"></span>'
+            f'<span class="tb-txt"><b>{h["ticker"]}</b> {html.escape(libelle(h))} · {t("atteinte")}</span>'
+            f'<span class="tb-discret">{date_h.day} {t(MOIS_COURTS[date_h.month - 1])}</span></div>',
+            unsafe_allow_html=True,
+        )
+
+    with st.popover(t("＋ Nouvelle alerte"), type="primary", width="stretch", key="pop_alerte"):
+        st.markdown(f"**{t('Nouvelle alerte sur {ticker}', ticker=choix)}**")
         if cible is not None and cible != symbole:
-            st.caption(f"Les alertes de prix restent exprimées en {symbole}, la devise de cotation de {choix}.")
+            st.caption(t("Les alertes de prix restent exprimées en {d}, la devise de cotation de {ticker}.", d=symbole, ticker=choix))
         type_choisi = st.radio(
-            "Type d'alerte", ["Prix", "Variation du jour (%)", "RSI", "Croisement MA50/MA200", "Volume anormal"]
+            t("Type d'alerte"), ["Prix", "Variation du jour (%)", "RSI", "Croisement MA50/MA200", "Volume anormal"], format_func=t
         )
 
         if type_choisi == "RSI":
             type_alerte = "rsi"
-            sens_choisi = st.radio("Prévenez-moi quand l'action est", ["en surchauffe (RSI au-dessus de)", "en survente (RSI en dessous de)"])
+            sens_choisi = st.radio(t("Prévenez-moi quand l'action est"), ["en surchauffe (RSI au-dessus de)", "en survente (RSI en dessous de)"], format_func=t)
             sens = "hausse" if sens_choisi.startswith("en surchauffe") else "baisse"
             seuil = st.number_input(
-                "Seuil du RSI", min_value=1.0, max_value=99.0, value=70.0 if sens == "hausse" else 30.0, step=1.0, format="%.0f"
+                t("Seuil du RSI"), min_value=1.0, max_value=99.0, value=70.0 if sens == "hausse" else 30.0, step=1.0, format="%.0f"
             )
         elif type_choisi == "Volume anormal":
             type_alerte = "volume_anormal"
             sens = "hausse"
             seuil = st.number_input(
-                "Volume du jour au moins égal à (× la moyenne des 20 derniers jours)",
+                t("Volume du jour au moins égal à (× la moyenne des 20 derniers jours)"),
                 min_value=1.2, max_value=10.0, value=2.0, step=0.1, format="%.1f",
             )
-            st.caption("Le volume du jour est partiel tant que la bourse est ouverte : l'alerte peut partir en fin de séance.")
+            st.caption(t("Le volume du jour est partiel tant que la bourse est ouverte : l'alerte peut partir en fin de séance."))
         elif type_choisi == "Croisement MA50/MA200":
             type_alerte = "croisement_ma"
-            sens_choisi = st.radio("Prévenez-moi quand", ["la MA50 passe au-dessus de la MA200", "la MA50 passe sous la MA200"])
+            sens_choisi = st.radio(t("Prévenez-moi quand"), ["la MA50 passe au-dessus de la MA200", "la MA50 passe sous la MA200"], format_func=t)
             sens = "hausse" if "au-dessus" in sens_choisi else "baisse"
             seuil = 0.0
-            st.caption("Alerte envoyée si le croisement a eu lieu pendant les 5 dernières séances.")
+            st.caption(t("Alerte envoyée si le croisement a eu lieu pendant les 5 dernières séances."))
         elif type_choisi == "Prix":
             type_alerte = "prix"
-            sens_choisi = st.radio("Prévenez-moi quand le cours est", ["au-dessus de", "en dessous de"], horizontal=True)
+            sens_choisi = st.radio(t("Prévenez-moi quand le cours est"), ["au-dessus de", "en dessous de"], horizontal=True, format_func=t)
             sens = "hausse" if sens_choisi == "au-dessus de" else "baisse"
             seuil = st.number_input(
-                f"Seuil ({symbole})", min_value=0.01, value=round(float(dernier), 2), step=1.0, format="%.2f"
+                t("Seuil ({d})", d=symbole), min_value=0.01, value=round(float(dernier), 2), step=1.0, format="%.2f"
             )
         else:
             type_alerte = "variation_jour"
-            sens_choisi = st.radio("Prévenez-moi quand l'action", ["monte d'au moins", "baisse d'au moins"], horizontal=True)
+            sens_choisi = st.radio(t("Prévenez-moi quand l'action"), ["monte d'au moins", "baisse d'au moins"], horizontal=True, format_func=t)
             sens = "hausse" if sens_choisi == "monte d'au moins" else "baisse"
-            seuil = st.number_input("Variation sur la journée (%)", min_value=0.1, value=5.0, step=0.1, format="%.1f")
+            seuil = st.number_input(t("Variation sur la journée (%)"), min_value=0.1, value=5.0, step=0.1, format="%.1f")
 
-        if st.button("Créer l'alerte"):
+        if st.button(t("Créer l'alerte"), type="primary"):
             db.creer_alerte(choix, sens, float(seuil), type_alerte)
-            ajouter_message("success", f"Alerte créée sur {choix}.")
+            ajouter_message("success", t("Alerte créée sur {ticker}.", ticker=choix))
 
             # On prévient si la condition est déjà vraie : l'alerte partira à la prochaine vérification
             if type_alerte == "prix":
@@ -1053,48 +1214,146 @@ with carte_alertes:
             if deja_franchi:
                 ajouter_message(
                     "info",
-                    "Cette condition est déjà remplie actuellement : l'alerte se déclenchera "
-                    "à la prochaine vérification.",
+                    t("Cette condition est déjà remplie actuellement : l'alerte se déclenchera "
+                      "à la prochaine vérification."),
                 )
             st.rerun()
 
-with carte_historique:
-    st.markdown('<h2 class="tb-titre-carte">Alertes déclenchées</h2>', unsafe_allow_html=True)
-historique_alertes = db.lister_historique()
-if historique_alertes:
-    for h in historique_alertes[:3]:
-        with st.container(border=True):
-            st.markdown(f"**{h['ticker']}**  {libelle_condition(h)}")
-            st.caption(f"{h['date_declenchement']} · cours au déclenchement {h['cours']:.2f} {devise(h['ticker'])}")
-    st.dataframe(
-        [
-            {
-                "Date": h["date_declenchement"],
-                "Action": h["ticker"],
-                "Condition": libelle_condition(h),
-                "Cours au déclenchement": f"{h['cours']:.2f} {devise(h['ticker'])}"
-                + (f" ({h['variation']:+.2f} %)" if h["variation"] is not None else ""),
-            }
-            for h in historique_alertes
-        ],
-        hide_index=True,
-        use_container_width=True,
-    )
-    st.download_button(
-        "Télécharger l'historique (CSV)",
-        export.vers_csv(
-            [
-                {
-                    "Date": h["date_declenchement"], "Action": h["ticker"], "Condition": libelle_condition(h),
-                    "Cours": h["cours"], "Variation du jour (%)": h["variation"],
-                }
-                for h in historique_alertes
-            ]
-        ),
-        file_name="historique_alertes.csv",
-        mime="text/csv",
-    )
-else:
-    st.caption("Aucune alerte déclenchée pour le moment.")
+    c_verifier, c_historique = st.columns(2)
+    if alertes and c_verifier.button(t("Vérifier maintenant"), type="tertiary", icon=":material/refresh:"):
+        declenchees, echecs = verifier_alertes()
+        for alerte, mesure, information in declenchees:
+            ajouter_message("warning", t("Alerte déclenchée · {texte} ({info})", texte=decrire_alerte(alerte, mesure), info=information))
+        for alerte, mesure, explication in echecs:
+            ajouter_message(
+                "error",
+                t("Seuil franchi · {texte}, mais le message Telegram n'est pas parti : {explication} L'alerte reste active.",
+                  texte=decrire_alerte(alerte, mesure), explication=explication),
+            )
+        if not declenchees and not echecs:
+            ajouter_message("success", t("Vérification faite : aucun seuil n'est franchi."))
+        st.rerun()
+    if historique_alertes:
+        with c_historique.popover(t("Historique"), type="tertiary", icon=":material/history:"):
+            st.dataframe(
+                [
+                    {
+                        t("Date"): h["date_declenchement"],
+                        t("Action"): h["ticker"],
+                        t("Condition"): libelle(h),
+                        t("Cours au déclenchement"): f"{h['cours']:.2f} {devise(h['ticker'])}"
+                        + (f" ({h['variation']:+.2f} %)" if h["variation"] is not None else ""),
+                    }
+                    for h in historique_alertes[:5]   # les 5 plus récentes ; le CSV contient tout l'historique
+                ],
+                hide_index=True,
+                use_container_width=True,
+            )
+            st.download_button(
+                t("Télécharger l'historique (CSV)"),
+                export.vers_csv(
+                    [
+                        {
+                            "Date": h["date_declenchement"], "Action": h["ticker"], "Condition": libelle_condition(h),
+                            "Cours": h["cours"], "Variation du jour (%)": h["variation"],
+                        }
+                        for h in historique_alertes
+                    ]
+                ),
+                file_name="historique_alertes.csv",
+                mime="text/csv",
+            )
 
-st.caption("Outil d'aide à la décision, ne constitue pas un conseil financier.")
+# ---------------------------------------------------------------
+# Rangée du bas : actualités | portefeuille
+# ---------------------------------------------------------------
+col_actus, col_pf = st.columns([2, 1], gap="medium")
+
+articles = liste_actualites(choix)
+scores = [sentiment.score_titre(a["titre"]) for a in articles]
+with col_actus.container(border=True, key="bloc_actus"):
+    resume_sentiment = sentiment.synthese(scores)
+    texte_sentiment = ""
+    if resume_sentiment:
+        texte_sentiment = t(
+            "Sentiment global : {e} · {p} positifs · {n} neutres · {m} négatifs",
+            e=f'<b style="color:{style.TEXTE}">{t(resume_sentiment["etiquette"])}</b>', p=resume_sentiment["positifs"],
+            n=resume_sentiment["neutres"], m=resume_sentiment["negatifs"],
+        )
+    st.markdown(
+        f'<div class="tb-titre"><h2>{t("Actualités · {ticker}", ticker=choix)}</h2><span class="tb-discret">{texte_sentiment}</span></div>',
+        unsafe_allow_html=True,
+    )
+    if not articles:
+        st.caption(t("Aucune actualité disponible pour le moment (la source peut être indisponible)."))
+    else:
+        cartes_actus = []
+        for article, score in list(zip(articles, scores))[:6]:
+            etiquette = sentiment.etiquette(score)   # "positif", "neutre" ou "négatif"
+            classe = {"positif": "positif", "négatif": "negatif"}.get(etiquette, "neutre")
+            ligne = " · ".join(x for x in (article["source"], langue.depuis(actualites.depuis(article["date"]))) if x)
+            cartes_actus.append(
+                f'<a class="tb-actu" href="{html.escape(article["lien"] or "#")}" target="_blank">'
+                f'<span class="tb-sent {classe}">{t(etiquette.capitalize())}</span>'
+                f'<span class="tb-txt"><span>{html.escape(article["titre"])}</span><span>{html.escape(ligne)}</span></span></a>'
+            )
+        st.markdown('<div class="tb-actus">' + "".join(cartes_actus) + "</div>", unsafe_allow_html=True)
+        note_actus = t(
+            "Articles en général en anglais (Yahoo Finance). Le sentiment est un simple décompte de mots "
+            "positifs et négatifs dans le titre : indicatif."
+        )
+        st.markdown(f'<div class="tb-discret" style="margin-top:8px">{note_actus}</div>', unsafe_allow_html=True)
+
+with col_pf.container(border=True, key="bloc_pf"):
+    st.markdown(f'<div class="tb-titre"><h2>{t("Mon portefeuille")}</h2></div>', unsafe_allow_html=True)
+    lots_pf = db.lister_positions()
+    lignes_pf = []
+    if lots_pf:
+        cours_pf = {}
+        for tk in {lot["ticker"] for lot in lots_pf}:
+            resume_t = resume_du_jour(tk)
+            cours_pf[tk] = float(resume_t[0]) if resume_t else None
+        # Tout est additionné dans une même devise : celle choisie en haut, sinon l'euro
+        devise_pf = cible or "€"
+        taux_pf = taux if cible is not None else taux_du_jour()
+        lignes_pf = [l for l in portefeuille.synthese(lots_pf, cours_pf) if l["valeur"] is not None]
+        lignes_pf = portefeuille.convertir_lignes(lignes_pf, devise_pf, lambda de: devises.facteur(de, devise_pf, taux_pf))
+    if not lignes_pf:
+        st.caption(t("Ton portefeuille est vide : enregistre un achat dans la vue Portefeuille."))
+        if st.button(t("Ouvrir le portefeuille"), key="ouvrir_pf"):
+            st.session_state["vue"] = "Portefeuille"
+            st.rerun()
+    else:
+        valeurs = {}
+        for l in lignes_pf:
+            valeurs[l["ticker"]] = valeurs.get(l["ticker"], 0) + l["valeur"]
+        total_pf = sum(valeurs.values())
+        investi_pf = sum(l["investi"] for l in lignes_pf)
+        gain_pf = total_pf - investi_pf
+        gain_pct_pf = gain_pf / investi_pf * 100 if investi_pf else 0.0
+        couleurs_pf = [style.TURQUOISE, style.VIOLET, style.JAUNE, style.BLEU, style.VERT, style.ROUGE]
+        repartition = sorted(valeurs.items(), key=lambda kv: -kv[1])
+        parts = [(v / total_pf * 100 if total_pf else 0, couleurs_pf[i % len(couleurs_pf)]) for i, (_, v) in enumerate(repartition)]
+        classe_gain = "tb-hausse" if gain_pf >= 0 else "tb-baisse"
+        st.markdown(
+            f'<div class="tb-pf">{style.donut(parts, aria=t("Répartition du portefeuille"))}'
+            f'<div><div class="tb-discret">{t("Valeur totale")}</div><div class="tb-pf-total">{nb(total_pf)} {devise_pf}</div>'
+            f'<div class="{classe_gain}" style="font-size:13px">{"▲" if gain_pf >= 0 else "▼"} {nb(abs(gain_pf))} {devise_pf} · '
+            f'{"+" if gain_pct_pf >= 0 else "−"}{nb(abs(gain_pct_pf))} %</div></div></div>'
+            + "".join(
+                f'<div class="tb-pf-ligne"><span><span style="color:{couleur}">●</span> {tk}</span>'
+                f'<span class="tb-discret">{nb(pct, 0)} %</span></div>'
+                for (tk, _), (pct, couleur) in zip(repartition, parts)
+            ),
+            unsafe_allow_html=True,
+        )
+
+# Pied de page : taux de change utilisé et avertissement
+pied = [t("Cours différés d'environ 15 minutes · source : Yahoo Finance")]
+if cible is not None:
+    if cible == "$":
+        pied.append(t("{a} = {x:.4f} {b} · taux actuel", a="1 €", x=devises.facteur("€", "$", taux), b="$"))
+    else:
+        pied.append(t("{a} = {x:.4f} {b} · taux actuel", a="1 $", x=devises.facteur("$", cible, taux), b=cible))
+pied.append(t("Outil d'aide à la décision, pas un conseil financier."))
+st.markdown(f'<div class="tb-pied">{" · ".join(pied)}</div>', unsafe_allow_html=True)

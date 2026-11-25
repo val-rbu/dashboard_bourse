@@ -1,69 +1,52 @@
-"""Conversion de prix entre l'euro (€) et le dollar ($).
+"""Conversion de prix entre plusieurs devises, au taux de change du jour.
 
-On part du taux EUR/USD (nombre de dollars pour 1 euro), récupéré sous forme de série
-journalière. Pour afficher l'historique d'un cours dans une autre devise, on convertit chaque
-jour avec le taux de ce jour-là : le graphique tient ainsi compte de l'évolution du change.
+Tous les taux sont exprimés par rapport au dollar : combien d'unités de la devise pour 1 $.
+Yahoo Finance les donne avec les symboles « EUR=X », « GBP=X », « JPY=X », « CNY=X ».
+Pour passer d'une devise A à une devise B : montant × (taux de B / taux de A).
 
-Seuls € et $ sont gérés ; toute autre combinaison laisse les valeurs inchangées.
+Le même taux (celui du jour) est appliqué à tout l'historique : un graphique converti garde
+donc exactement la même forme, seule l'échelle des prix change.
 
-Ce fichier ne dépend ni de Streamlit ni d'Internet.
+Ce fichier ne dépend ni de Streamlit ni d'Internet : app.py lui fournit les taux.
 """
 
-import numpy as np
-import pandas as pd
-
-DEVISES_GEREES = ("€", "$")
-
-
-def _convertible(de, vers):
-    return de != vers and de in DEVISES_GEREES and vers in DEVISES_GEREES
-
-
-def _jours(index):
-    """Ramène des dates avec heure (et fuseau) à des jours simples, pour pouvoir les comparer."""
-    jours = pd.DatetimeIndex(index)
-    if jours.tz is not None:
-        jours = jours.tz_localize(None)
-    return jours.normalize()
+# Symbole affiché -> (code de la devise, nom dans la liste déroulante, symbole Yahoo du taux pour 1 $)
+DEVISES = {
+    "€": ("EUR", "Euro (€)", "EUR=X"),
+    "$": ("USD", "Dollar ($)", None),          # le dollar est la référence : taux = 1
+    "£": ("GBP", "Livre sterling (£)", "GBP=X"),
+    "¥": ("JPY", "Yen japonais (¥)", "JPY=X"),
+    "CN¥": ("CNY", "Yuan chinois (CN¥)", "CNY=X"),
+}
 
 
-def facteurs(index, de, vers, eurusd):
-    """Nombre par lequel multiplier un prix en `de` pour l'avoir en `vers`, pour chaque date de `index`.
+def symboles_yahoo():
+    """Symboles Yahoo à télécharger pour connaître tous les taux : {symbole affiché: symbole Yahoo}."""
+    return {sym: info[2] for sym, info in DEVISES.items() if info[2]}
 
-    Le taux utilisé est celui du jour ; s'il manque (week-end, jour férié), on reprend le dernier connu.
+
+def facteur(de, vers, taux):
+    """Nombre par lequel multiplier un montant en `de` pour l'avoir en `vers`.
+
+    taux : {symbole affiché: unités pour 1 $}. Si un taux manque, on ne convertit pas (facteur 1).
     """
-    if not _convertible(de, vers):
-        return np.ones(len(index))
-    taux_jour = eurusd.dropna().copy()
-    taux_jour.index = _jours(taux_jour.index)
-    taux_jour = taux_jour[~taux_jour.index.duplicated(keep="last")].sort_index()
-    cles = _jours(index)
-    taux = taux_jour.reindex(taux_jour.index.union(cles.unique())).ffill().bfill().reindex(cles).to_numpy(dtype=float)
-    return taux if de == "€" else 1 / taux   # € -> $ : on multiplie par le taux ; $ -> € : on le divise
-
-
-def convertir_serie(serie, de, vers, eurusd):
-    """Série de prix (une valeur par date) convertie de `de` vers `vers`."""
-    if not _convertible(de, vers):
-        return serie
-    return serie * facteurs(serie.index, de, vers, eurusd)
-
-
-def convertir_ohlc(donnees, de, vers, eurusd):
-    """Tableau de cours (Open, High, Low, Close) converti ; le volume ne change pas."""
-    if not _convertible(de, vers):
-        return donnees
-    donnees = donnees.copy()
-    f = facteurs(donnees.index, de, vers, eurusd)
-    for colonne in ("Open", "High", "Low", "Close"):
-        if colonne in donnees:
-            donnees[colonne] = donnees[colonne] * f
-    return donnees
-
-
-def facteur_actuel(de, vers, eurusd):
-    """Facteur de conversion avec le dernier taux connu (pour un prix isolé)."""
-    if not _convertible(de, vers):
+    if de == vers:
         return 1.0
-    taux = float(eurusd.dropna().iloc[-1])
-    return taux if de == "€" else 1 / taux
+    t_de = 1.0 if de == "$" else taux.get(de)
+    t_vers = 1.0 if vers == "$" else taux.get(vers)
+    if not t_de or not t_vers:
+        return 1.0
+    return t_vers / t_de
+
+
+def convertir(donnees, f):
+    """Applique un facteur à une série de prix, ou aux colonnes Open/High/Low/Close d'un tableau (pas au volume)."""
+    if f == 1.0:
+        return donnees
+    if hasattr(donnees, "columns"):
+        donnees = donnees.copy()
+        for colonne in ("Open", "High", "Low", "Close"):
+            if colonne in donnees:
+                donnees[colonne] = donnees[colonne] * f
+        return donnees
+    return donnees * f
