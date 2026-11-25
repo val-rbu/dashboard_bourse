@@ -273,7 +273,7 @@ def selecteur_devise(cle):
 # ---------------------------------------------------------------
 # Navigation, barre du haut et liste de suivi (disposition de la maquette « refonte moderne »)
 # ---------------------------------------------------------------
-PRENOM = "Valentin"   # prénom du message d'accueil
+PRENOM = "" if os.getenv("MODE_EN_LIGNE") == "1" else "Valentin"   # prénom du message d'accueil (aucun sur le site en ligne)
 liste_suivi = db.lister_watchlist()
 VUES = ["Une action", "Comparaison", "Portefeuille", "Backtest", "Projection"]
 # Pour chaque vue : (nom dans la barre de navigation, icône Material de Streamlit)
@@ -388,7 +388,7 @@ with st.container(key="barre_haut"):
     c_salut, c_recherche, c_devise, c_langue, c_theme = st.columns([3.1, 2.7, 1.3, 0.95, 0.45], vertical_alignment="center")
     with c_salut:
         st.markdown(
-            f'<div class="tb-salut"><h1>{t("Bonjour {prenom}", prenom=PRENOM)}</h1><div>{sous_titre_accueil()}</div></div>',
+            f'<div class="tb-salut"><h1>{t("Bonjour {prenom}", prenom=PRENOM).strip()}</h1><div>{sous_titre_accueil()}</div></div>',
             unsafe_allow_html=True,
         )
     with c_recherche:
