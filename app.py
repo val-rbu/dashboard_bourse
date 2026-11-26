@@ -24,6 +24,7 @@ Fichiers du projet :
 """
 
 import html
+import json
 import os
 import re
 import secrets
@@ -59,6 +60,10 @@ try:   # champ de recherche avec liste déroulante en direct (paquet facultatif 
     from streamlit_searchbox import st_searchbox
 except ImportError:
     st_searchbox = None
+try:   # petit composant qui lit et écrit la mémoire du navigateur (localStorage) : sert au site en ligne
+    from streamlit_js_eval import streamlit_js_eval
+except ImportError:
+    streamlit_js_eval = None
 
 from verificateur import condition_remplie, decrire, devise_alerte, devise_mesure, libelle_condition, mesurer, verifier_alertes
 
@@ -114,13 +119,23 @@ def utiliser_base_invite():
     if "id_visiteur" not in st.session_state:
         # L'adresse de la page garde le numéro du visiteur (?v=…) : recharger la page retrouve la même base
         id_url = st.query_params.get("v", "")
-        st.session_state["id_visiteur"] = id_url if re.fullmatch(r"[0-9a-f]{32}", id_url) else uuid.uuid4().hex
+        if re.fullmatch(r"[0-9a-f]{32}", id_url):
+            st.session_state.update(id_visiteur=id_url, invite_fixe=True)
+        else:
+            st.session_state["id_visiteur"] = uuid.uuid4().hex
         for ancien in Path(tempfile.gettempdir()).glob("bourse_visiteur_*.db"):
             try:
                 if time.time() - ancien.stat().st_mtime > 86400:
                     ancien.unlink()
             except OSError:
                 pass
+    # Nouvel onglet sans ?v= : la mémoire du navigateur peut redonner le numéro de la visite précédente
+    if "memoire" in st.session_state and not st.session_state.get("invite_fixe"):
+        id_memoire = st.session_state["memoire"].get("v", "")
+        fichier = Path(tempfile.gettempdir()) / f"bourse_visiteur_{id_memoire}.db"
+        if re.fullmatch(r"[0-9a-f]{32}", id_memoire) and fichier.exists():
+            st.session_state.update(id_visiteur=id_memoire, liste_initialisee=True)
+        st.session_state["invite_fixe"] = True
     if st.query_params.get("v") != st.session_state["id_visiteur"]:
         st.query_params["v"] = st.session_state["id_visiteur"]
     db.utiliser_sqlite(Path(tempfile.gettempdir()) / f"bourse_visiteur_{st.session_state['id_visiteur']}.db")
@@ -133,12 +148,35 @@ def utiliser_base_invite():
         st.session_state["liste_initialisee"] = True
 
 
-def ecrire_cookie(valeur, duree):
-    """Écrit (ou efface, avec duree=0) le cookie de connexion dans le navigateur du visiteur."""
-    st.html(
-        f"<script>document.cookie = '{NOM_COOKIE}={valeur}; path=/; max-age={duree}; SameSite=Lax; Secure';</script>",
-        unsafe_allow_javascript=True,
+def lire_memoire_navigateur():
+    """Lit, une fois par visite, ce que le navigateur a gardé : connexion (s) et numéro d'invité (v).
+
+    La réponse du navigateur arrive à l'affichage suivant : d'ici là, la fonction ne fait rien.
+    """
+    if streamlit_js_eval is None or "memoire" in st.session_state:
+        return
+    brut = streamlit_js_eval(
+        js_expressions="JSON.stringify({s: localStorage.getItem('tb_session') || '', v: localStorage.getItem('tb_invite') || ''})",
+        key="lire_memoire",
     )
+    if brut is not None:
+        try:
+            st.session_state["memoire"] = json.loads(brut)
+        except (TypeError, ValueError):
+            st.session_state["memoire"] = {}
+
+
+def memoriser(nom, valeur):
+    """Garde une valeur dans la mémoire du navigateur (ou l'efface si valeur est None), jusqu'à confirmation."""
+    if streamlit_js_eval is None or "memoire" not in st.session_state:
+        return   # on attend d'avoir lu la mémoire, pour ne rien écraser
+    if valeur is None:
+        expression, cle = f"(localStorage.removeItem('{nom}'), 'ok')", f"oublier_{nom}"
+    else:
+        expression, cle = f"(localStorage.setItem('{nom}', '{valeur}'), 'ok')", f"garder_{nom}_{valeur}"
+    faits = st.session_state.setdefault("memoire_faite", set())
+    if cle not in faits and streamlit_js_eval(js_expressions=expression, key=cle) == "ok":
+        faits.add(cle)
 
 
 def connecter(utilisateur):
@@ -155,7 +193,7 @@ def connecter(utilisateur):
             db.ajouter_position(lot["ticker"], lot["quantite"], lot["prix_achat"])
     jeton = secrets.token_urlsafe(32)
     db.creer_session(jeton, utilisateur)
-    st.session_state.update(utilisateur=utilisateur, jeton=jeton, cookie_a_ecrire=jeton, compte_pret=True)
+    st.session_state.update(utilisateur=utilisateur, jeton=jeton, compte_pret=True, oublier_session=False)
     st.query_params["s"] = jeton          # l'adresse de la page garde la connexion (rechargement, favori)
     if "v" in st.query_params:
         del st.query_params["v"]
@@ -169,7 +207,9 @@ def deconnecter():
         db.supprimer_session(st.session_state["jeton"])
     for cle in ("utilisateur", "jeton", "compte_pret"):
         st.session_state.pop(cle, None)
-    st.session_state["cookie_a_effacer"] = True
+    st.session_state["oublier_session"] = True
+    st.session_state.setdefault("memoire", {})["s"] = ""
+    st.session_state.get("memoire_faite", set()).discard("oublier_tb_session")   # pour pouvoir l'effacer à nouveau
     if "s" in st.query_params:
         del st.query_params["s"]
     st.rerun()
@@ -179,21 +219,28 @@ if not EN_LIGNE:
     db.utiliser_sqlite()   # ton PC : bourse.db
     db.initialiser()
 else:
-    # Visiteur qui revient : sa connexion est dans l'adresse de la page (?s=…) ou dans un cookie
-    if COMPTES and not st.session_state.get("utilisateur") and not st.session_state.get("cookie_lu"):
-        st.session_state["cookie_lu"] = True
-        jeton_cookie = st.query_params.get("s") or st.context.cookies.get(NOM_COOKIE)
-        if jeton_cookie:
+    lire_memoire_navigateur()
+    # Visiteur qui revient : sa connexion est dans l'adresse (?s=…), la mémoire du navigateur ou un cookie
+    if COMPTES and not st.session_state.get("utilisateur"):
+        essayes = st.session_state.setdefault("jetons_essayes", set())
+        candidats = [st.query_params.get("s"), (st.session_state.get("memoire") or {}).get("s"), st.context.cookies.get(NOM_COOKIE)]
+        for jeton_candidat in candidats:
+            if not jeton_candidat or jeton_candidat in essayes:
+                continue
+            essayes.add(jeton_candidat)
             try:
                 db.utiliser_postgres(ADRESSE_BASE)
                 db.initialiser()
-                utilisateur_cookie = db.utilisateur_de_session(jeton_cookie)
-                if utilisateur_cookie:
-                    st.session_state.update(utilisateur=utilisateur_cookie, jeton=jeton_cookie)
-                elif "s" in st.query_params:
-                    del st.query_params["s"]   # connexion expirée ou fermée
+                utilisateur_trouve = db.utilisateur_de_session(jeton_candidat)
             except Exception:
-                pass   # base injoignable : le visiteur continue en invité
+                break   # base injoignable : le visiteur continue en invité
+            if utilisateur_trouve:
+                st.session_state.update(utilisateur=utilisateur_trouve, jeton=jeton_candidat)
+                break
+            if st.query_params.get("s") == jeton_candidat:
+                del st.query_params["s"]   # connexion expirée ou fermée
+            if (st.session_state.get("memoire") or {}).get("s") == jeton_candidat:
+                st.session_state["oublier_session"] = True
 
     UTILISATEUR = st.session_state.get("utilisateur") if COMPTES else None
     if UTILISATEUR:
@@ -205,6 +252,8 @@ else:
             notifications.definir_chat_id_visiteur(UTILISATEUR)   # ses alertes partent vers SON Telegram
             if st.session_state.get("jeton") and st.query_params.get("s") != st.session_state["jeton"]:
                 st.query_params["s"] = st.session_state["jeton"]   # garde la connexion dans l'adresse
+            if "v" in st.query_params:
+                del st.query_params["v"]
         except Exception:
             st.error(t("La base en ligne ne répond pas : tu es en mode invité pour le moment."))
             UTILISATEUR = None
@@ -216,11 +265,13 @@ else:
             _id_saisi = (st.session_state.get("chat_id_visiteur") or "").strip()
             notifications.definir_chat_id_visiteur(_id_saisi if re.fullmatch(CHAT_ID_VALIDE, _id_saisi) else "")
 
-    # Cookie à écrire (juste connecté) ou à effacer (juste déconnecté)
-    if st.session_state.get("cookie_a_ecrire"):
-        ecrire_cookie(st.session_state.pop("cookie_a_ecrire"), DUREE_COOKIE_SECONDES)
-    if st.session_state.pop("cookie_a_effacer", False):
-        ecrire_cookie("", 0)
+    # Mémoire du navigateur : elle retrouve la visite même après la fermeture de l'onglet
+    if UTILISATEUR and st.session_state.get("jeton"):
+        memoriser("tb_session", st.session_state["jeton"])
+    elif st.session_state.get("oublier_session"):
+        memoriser("tb_session", None)
+    if not UTILISATEUR:
+        memoriser("tb_invite", st.session_state["id_visiteur"])
 UTILISATEUR = st.session_state.get("utilisateur") if COMPTES else None
 
 

@@ -4,5 +4,6 @@ plotly
 python-dotenv
 requests
 streamlit-searchbox
+streamlit-js-eval
 # Base en ligne (Neon), utile seulement pour le site : inutile sur un PC en Python 3.15
 psycopg[binary]; python_version < "3.15"
