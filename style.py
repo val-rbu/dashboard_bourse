@@ -136,7 +136,13 @@ header[data-testid="stHeader"] {{ background: transparent; }}
 [class*="st-key-carte_"] [class*="st-key-retrait_"] {{ width: auto !important; }}
 [class*="st-key-retrait_"] button {{ width: 26px; height: 26px; min-height: 26px; padding: 0; border-radius: 8px; border: 0 !important;
   background: transparent !important; color: {TEXTE_DISCRET}; font-size: 12px; opacity: 0; transition: opacity .12s; }}
-[class*="st-key-retrait_"] button [data-testid="stIconMaterial"] {{ display: none; }}   /* pas de flèche de menu */
+/* La croix bien au centre de sa case : on retire la flèche du menu (et la place qu'elle gardait),
+   et toutes les marges internes que Streamlit met autour du texte du bouton. */
+[class*="st-key-retrait_"] button {{ display: flex !important; align-items: center; justify-content: center; padding: 0 !important; line-height: 1; }}
+[class*="st-key-retrait_"] button * {{ margin: 0 !important; padding: 0 !important; gap: 0 !important; line-height: 1 !important; }}
+[class*="st-key-retrait_"] button > div {{ width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; }}
+[class*="st-key-retrait_"] button [data-testid="stIconMaterial"],
+[class*="st-key-retrait_"] button :has(> [data-testid="stIconMaterial"]):not(:has([data-testid="stMarkdownContainer"])) {{ display: none !important; }}
 [class*="st-key-carte_"]:hover [class*="st-key-retrait_"] button, [class*="st-key-retrait_"] button[aria-expanded="true"] {{ opacity: 1; }}
 [class*="st-key-retrait_"] button:hover {{ color: {ROUGE}; background: {FOND_BAISSE} !important; }}
 @media (hover: none) {{ [class*="st-key-retrait_"] button {{ opacity: .7; }} }}   /* téléphone : pas de survol, croix toujours visible */
