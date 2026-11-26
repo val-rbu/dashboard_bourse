@@ -112,13 +112,17 @@ DUREE_COOKIE_SECONDES = 90 * 24 * 3600
 def utiliser_base_invite():
     """Base temporaire propre à ce visiteur (site en ligne, sans compte)."""
     if "id_visiteur" not in st.session_state:
-        st.session_state["id_visiteur"] = uuid.uuid4().hex
+        # L'adresse de la page garde le numéro du visiteur (?v=…) : recharger la page retrouve la même base
+        id_url = st.query_params.get("v", "")
+        st.session_state["id_visiteur"] = id_url if re.fullmatch(r"[0-9a-f]{32}", id_url) else uuid.uuid4().hex
         for ancien in Path(tempfile.gettempdir()).glob("bourse_visiteur_*.db"):
             try:
                 if time.time() - ancien.stat().st_mtime > 86400:
                     ancien.unlink()
             except OSError:
                 pass
+    if st.query_params.get("v") != st.session_state["id_visiteur"]:
+        st.query_params["v"] = st.session_state["id_visiteur"]
     db.utiliser_sqlite(Path(tempfile.gettempdir()) / f"bourse_visiteur_{st.session_state['id_visiteur']}.db")
     db.initialiser()
     # La liste de départ est créée une seule fois (même si le premier chargement a été interrompu)
@@ -152,6 +156,9 @@ def connecter(utilisateur):
     jeton = secrets.token_urlsafe(32)
     db.creer_session(jeton, utilisateur)
     st.session_state.update(utilisateur=utilisateur, jeton=jeton, cookie_a_ecrire=jeton, compte_pret=True)
+    st.query_params["s"] = jeton          # l'adresse de la page garde la connexion (rechargement, favori)
+    if "v" in st.query_params:
+        del st.query_params["v"]
     st.session_state.pop("code_connexion", None)
     st.rerun()
 
@@ -163,6 +170,8 @@ def deconnecter():
     for cle in ("utilisateur", "jeton", "compte_pret"):
         st.session_state.pop(cle, None)
     st.session_state["cookie_a_effacer"] = True
+    if "s" in st.query_params:
+        del st.query_params["s"]
     st.rerun()
 
 
@@ -170,10 +179,10 @@ if not EN_LIGNE:
     db.utiliser_sqlite()   # ton PC : bourse.db
     db.initialiser()
 else:
-    # Visiteur qui revient : son navigateur a gardé le cookie de connexion
+    # Visiteur qui revient : sa connexion est dans l'adresse de la page (?s=…) ou dans un cookie
     if COMPTES and not st.session_state.get("utilisateur") and not st.session_state.get("cookie_lu"):
         st.session_state["cookie_lu"] = True
-        jeton_cookie = st.context.cookies.get(NOM_COOKIE)
+        jeton_cookie = st.query_params.get("s") or st.context.cookies.get(NOM_COOKIE)
         if jeton_cookie:
             try:
                 db.utiliser_postgres(ADRESSE_BASE)
@@ -181,6 +190,8 @@ else:
                 utilisateur_cookie = db.utilisateur_de_session(jeton_cookie)
                 if utilisateur_cookie:
                     st.session_state.update(utilisateur=utilisateur_cookie, jeton=jeton_cookie)
+                elif "s" in st.query_params:
+                    del st.query_params["s"]   # connexion expirée ou fermée
             except Exception:
                 pass   # base injoignable : le visiteur continue en invité
 
@@ -192,6 +203,8 @@ else:
                 db.initialiser()
                 st.session_state["compte_pret"] = True
             notifications.definir_chat_id_visiteur(UTILISATEUR)   # ses alertes partent vers SON Telegram
+            if st.session_state.get("jeton") and st.query_params.get("s") != st.session_state["jeton"]:
+                st.query_params["s"] = st.session_state["jeton"]   # garde la connexion dans l'adresse
         except Exception:
             st.error(t("La base en ligne ne répond pas : tu es en mode invité pour le moment."))
             UTILISATEUR = None
