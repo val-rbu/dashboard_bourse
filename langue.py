@@ -404,4 +404,7 @@ EN = {
     "Ta liste de suivi est vide : ajoute une action avec la recherche en haut.": "Your watchlist is empty: add a stock with the search at the top.",
     "Cours différés d'environ 15 minutes · source : Yahoo Finance": "Prices delayed by about 15 minutes · source: Yahoo Finance",
     "Outil d'aide à la décision, pas un conseil financier.": "Decision-support tool, not financial advice.",
+    "Retirer": "Remove",
+    "Retirer **{ticker}** de ta liste ? Ses alertes actives seront aussi supprimées.":
+        "Remove **{ticker}** from your list? Its active alerts will be deleted too.",
 }

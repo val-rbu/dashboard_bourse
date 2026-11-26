@@ -121,12 +121,20 @@ header[data-testid="stHeader"] {{ background: transparent; }}
 
 /* ---------- Liste de suivi : une rangée de cartes cliquables ---------- */
 [class*="st-key-carte_"] {{ position: relative; }}
-[class*="st-key-carte_"] [data-testid="stElementContainer"]:has(button),
-[class*="st-key-carte_"] .element-container:has(button) {{ position: absolute; inset: 0; z-index: 2; margin: 0; }}
-/* Le bouton invisible doit couvrir toute la carte (Streamlit lui donnait la taille de son texte) */
-[class*="st-key-carte_"] [data-testid="stElementContainer"]:has(button) {{ width: 100% !important; height: 100% !important; }}
-[class*="st-key-carte_"] .stButton, [class*="st-key-carte_"] .stButton > div {{ width: 100% !important; height: 100% !important; }}
-[class*="st-key-carte_"] button {{ width: 100% !important; height: 100% !important; min-height: 100%; opacity: 0; cursor: pointer; }}
+/* Bouton invisible « Choisir » : posé sur toute la carte, un clic n'importe où choisit l'action */
+[class*="st-key-carte_"] [data-testid="stElementContainer"]:is([class*="st-key-choisir_"], :has([class*="st-key-choisir_"])) {{
+  position: absolute; inset: 0; z-index: 2; margin: 0; width: 100% !important; height: 100% !important; }}
+[class*="st-key-choisir_"] .stButton, [class*="st-key-choisir_"] .stButton > div, .stButton[class*="st-key-choisir_"] {{ width: 100% !important; height: 100% !important; }}
+[class*="st-key-choisir_"] button {{ width: 100% !important; height: 100% !important; min-height: 100%; opacity: 0; cursor: pointer; }}
+/* Croix « Retirer » en bas à droite, au-dessus du bouton invisible, visible au survol de la carte */
+[class*="st-key-carte_"] [data-testid="stElementContainer"]:is([class*="st-key-retrait_"], :has([class*="st-key-retrait_"])) {{
+  position: absolute; right: 6px; bottom: 6px; z-index: 3; width: auto !important; margin: 0; }}
+[class*="st-key-retrait_"] button {{ width: 26px; height: 26px; min-height: 26px; padding: 0; border-radius: 8px; border: 0 !important;
+  background: transparent !important; color: {TEXTE_DISCRET}; font-size: 12px; opacity: 0; transition: opacity .12s; }}
+[class*="st-key-retrait_"] button [data-testid="stIconMaterial"] {{ display: none; }}   /* pas de flèche de menu */
+[class*="st-key-carte_"]:hover [class*="st-key-retrait_"] button, [class*="st-key-retrait_"] button[aria-expanded="true"] {{ opacity: 1; }}
+[class*="st-key-retrait_"] button:hover {{ color: {ROUGE}; background: {FOND_BAISSE} !important; }}
+@media (hover: none) {{ [class*="st-key-retrait_"] button {{ opacity: .7; }} }}   /* téléphone : pas de survol, croix toujours visible */
 .tb-suivi {{ background: {CARTE}; border: 1px solid {BORDURE}; border-radius: 16px; padding: 12px 14px; display: flex; flex-direction: column; gap: 3px; min-height: 84px; box-sizing: border-box; }}
 [class*="st-key-carte_"]:hover .tb-suivi {{ border-color: {BORDURE_CHAMP}; }}
 .tb-suivi.tb-choisie {{ background: {CARTE_SURLIGNEE}; border-color: {TURQUOISE}; }}

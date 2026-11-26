@@ -421,9 +421,6 @@ for debut in range(0, len(elements_suivi), PAR_RANGEE):
             if element == "+":
                 with st.popover(t("＋ Ajouter"), key="pop_ajout", width="stretch"):
                     zone_recherche("recherche_ajout")
-                    if choix is not None and st.button(t("Retirer {ticker} de la liste", ticker=choix), key="retirer"):
-                        db.retirer_ticker(choix)   # supprime aussi ses alertes actives
-                        st.rerun()
                 continue
             resume_l = resume_du_jour(element)
             with st.container(key="carte_" + re.sub(r"\W", "_", element)):
@@ -443,6 +440,14 @@ for debut in range(0, len(elements_suivi), PAR_RANGEE):
                 if st.button(t("Choisir {ticker}", ticker=element), key=f"choisir_{element}"):
                     st.session_state["choix"] = element   # on reste sur la vue en cours
                     st.rerun()
+                # Petite croix en bas à droite de la carte (visible au survol) : retirer l'action, après confirmation
+                with st.popover("✕", key=f"retrait_{element}", help=t("Retirer {ticker} de la liste", ticker=element)):
+                    st.markdown(t("Retirer **{ticker}** de ta liste ? Ses alertes actives seront aussi supprimées.", ticker=element))
+                    if st.button(t("Retirer"), key=f"confirmer_retrait_{element}", type="primary"):
+                        db.retirer_ticker(element)   # supprime aussi ses alertes actives
+                        if st.session_state.get("choix") == element:
+                            st.session_state.pop("choix")
+                        st.rerun()
 
 
 # ---------------------------------------------------------------
