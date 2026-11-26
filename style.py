@@ -127,8 +127,13 @@ header[data-testid="stHeader"] {{ background: transparent; }}
 [class*="st-key-choisir_"] .stButton, [class*="st-key-choisir_"] .stButton > div, .stButton[class*="st-key-choisir_"] {{ width: 100% !important; height: 100% !important; }}
 [class*="st-key-choisir_"] button {{ width: 100% !important; height: 100% !important; min-height: 100%; opacity: 0; cursor: pointer; }}
 /* Croix « Retirer » en bas à droite, au-dessus du bouton invisible, visible au survol de la carte */
-[class*="st-key-carte_"] [data-testid="stElementContainer"]:is([class*="st-key-retrait_"], :has([class*="st-key-retrait_"])) {{
-  position: absolute; right: 6px; bottom: 6px; z-index: 3; width: auto !important; margin: 0; }}
+/* Le menu de la croix n'est pas un élément ordinaire de Streamlit : on vise directement le bloc de la carte
+   qui le contient, quel que soit son type, et on le pose dans le coin bas droit, au-dessus du bouton invisible. */
+[class*="st-key-carte_"] > [class*="st-key-retrait_"],
+[class*="st-key-carte_"] > :has([class*="st-key-retrait_"]) {{
+  position: absolute !important; right: 6px; bottom: 6px; z-index: 3; width: auto !important; min-width: 0 !important;
+  height: auto !important; margin: 0 !important; flex: none !important; }}
+[class*="st-key-carte_"] [class*="st-key-retrait_"] {{ width: auto !important; }}
 [class*="st-key-retrait_"] button {{ width: 26px; height: 26px; min-height: 26px; padding: 0; border-radius: 8px; border: 0 !important;
   background: transparent !important; color: {TEXTE_DISCRET}; font-size: 12px; opacity: 0; transition: opacity .12s; }}
 [class*="st-key-retrait_"] button [data-testid="stIconMaterial"] {{ display: none; }}   /* pas de flèche de menu */
