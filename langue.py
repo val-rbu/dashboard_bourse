@@ -407,6 +407,8 @@ EN = {
     "Me connecter": "Sign in",
     "Ce code n'est plus valable : demande un nouveau code.": "This code is no longer valid: ask for a new one.",
     "Code incorrect.": "Wrong code.",
+    "Ton portefeuille mélange des actions en euros et en dollars : il y a donc un total par devise. Choisis une devise dans la liste en haut de la page (par exemple « Euro (€) ») pour tout regrouper en un seul total.":
+        "Your portfolio mixes euro and dollar stocks, so there is one total per currency. Pick a currency from the list at the top of the page (for example \"Euro (€)\") to combine everything into a single total.",
     "Recevoir mes alertes sur Telegram": "Get my alerts on Telegram",
     "Les notifications Telegram ne sont pas disponibles sur ce site pour le moment.":
         "Telegram notifications are not available on this site for now.",

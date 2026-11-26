@@ -597,6 +597,9 @@ if vue == "Portefeuille":
         totaux = portefeuille.totaux_par_devise(lignes)
 
         # Les totaux, une ligne par devise
+        if len(totaux) > 1:
+            st.info(t("Ton portefeuille mélange des actions en euros et en dollars : il y a donc un total par devise. "
+                      "Choisis une devise dans la liste en haut de la page (par exemple « Euro (€) ») pour tout regrouper en un seul total."))
         for symbole_dev, tot in totaux.items():
             m1, m2, m3 = st.columns(3)
             m1.metric(t("Valeur actuelle ({d})", d=symbole_dev), f"{tot['valeur']:,.2f}".replace(",", " "))
