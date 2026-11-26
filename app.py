@@ -273,6 +273,8 @@ def selecteur_devise(cle):
 # ---------------------------------------------------------------
 # Navigation, barre du haut et liste de suivi (disposition de la maquette « refonte moderne »)
 # ---------------------------------------------------------------
+# Graphiques sans la barre d'outils de Plotly (appareil photo, zoom, déplacement...) qui apparaissait au survol
+CONFIG_GRAPHIQUE = {"displayModeBar": False}
 PRENOM = "" if os.getenv("MODE_EN_LIGNE") == "1" else "Valentin"   # prénom du message d'accueil (aucun sur le site en ligne)
 liste_suivi = db.lister_watchlist()
 VUES = ["Une action", "Comparaison", "Portefeuille", "Backtest", "Projection"]
@@ -538,7 +540,7 @@ if vue == "Portefeuille":
                 )
                 fig_pie.update_layout(title=t("Répartition ({d})", d=symbole_dev))
                 style.theme_graphique(fig_pie, 380)
-                colonne.plotly_chart(fig_pie, use_container_width=True)
+                colonne.plotly_chart(fig_pie, use_container_width=True, config=CONFIG_GRAPHIQUE)
 
         with st.expander(t("Détail des achats")):
             for lot in lots:
@@ -606,7 +608,7 @@ if vue == "Comparaison":
             yaxis_title=t("Base 100 au départ"),
         )
         style.theme_graphique(fig_comp, 520)
-        st.plotly_chart(fig_comp, use_container_width=True)
+        st.plotly_chart(fig_comp, use_container_width=True, config=CONFIG_GRAPHIQUE)
 
         # Classement, de la meilleure à la moins bonne performance
         performances = (courbes.iloc[-1] - 100).sort_values(ascending=False)
@@ -692,7 +694,7 @@ if vue == "Backtest":
             yaxis_title=t("Capital (base 100)"),
         )
         style.theme_graphique(fig_bt, 480)
-        st.plotly_chart(fig_bt, use_container_width=True)
+        st.plotly_chart(fig_bt, use_container_width=True, config=CONFIG_GRAPHIQUE)
 
         if resultat["trades"]:
             symbole_bt = devise(choix)
@@ -778,7 +780,7 @@ if vue == "Projection":
                                    line=dict(color=style.TURQUOISE, width=2, dash="dash")))
         fig_p.update_layout(title=t("{ticker} · projection sur {j} jours", ticker=choix, j=horizon), yaxis_title=t("Prix ({d})", d=symbole_p))
         style.theme_graphique(fig_p, 480)
-        st.plotly_chart(fig_p, use_container_width=True)
+        st.plotly_chart(fig_p, use_container_width=True, config=CONFIG_GRAPHIQUE)
 
         st.subheader(t("Cette méthode s'est-elle déjà trompée ?"))
         bilan = projection.evaluer(serie_proj, jours_historique, horizon)
@@ -1037,7 +1039,7 @@ fig.update_layout(
     margin=dict(l=10, r=10, t=10, b=40),
 )
 with carte:
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True, config=CONFIG_GRAPHIQUE)
 
     # Les quatre chiffres clés sous le graphique
     chiffres = [
