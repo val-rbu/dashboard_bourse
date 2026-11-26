@@ -389,6 +389,38 @@ EN = {
     "Alertes": "Alerts",
     "● Telegram connecté": "● Telegram connected",
     "○ Telegram non configuré (fichier .env)": "○ Telegram not set up (.env file)",
+    "○ Telegram : ajoute ton identifiant": "○ Telegram: add your ID",
+    "○ Telegram : connecte-toi": "○ Telegram: sign in",
+    "La base en ligne ne répond pas : tu es en mode invité pour le moment.": "The online database is not responding: you are in guest mode for now.",
+    "Mon compte Telegram": "My Telegram account",
+    "Connecté avec l'identifiant {id}. Tes alertes sont vérifiées automatiquement toutes les 15 minutes environ, même quand le site est fermé.":
+        "Signed in with ID {id}. Your alerts are checked automatically about every 15 minutes, even when the site is closed.",
+    "Se déconnecter": "Sign out",
+    "Se connecter avec Telegram": "Sign in with Telegram",
+    "Connecte-toi pour retrouver ta liste, ton portefeuille et tes alertes à chaque visite, et recevoir tes alertes automatiquement sur Telegram.":
+        "Sign in to find your watchlist, portfolio and alerts on every visit, and get your alerts automatically on Telegram.",
+    "3. Ton identifiant Telegram": "3. Your Telegram ID",
+    "Recevoir un code": "Get a code",
+    "Patiente 30 secondes avant de redemander un code.": "Wait 30 seconds before asking for a new code.",
+    "Code envoyé : regarde ton Telegram.": "Code sent: check your Telegram.",
+    "4. Code reçu sur Telegram": "4. Code received on Telegram",
+    "Me connecter": "Sign in",
+    "Ce code n'est plus valable : demande un nouveau code.": "This code is no longer valid: ask for a new one.",
+    "Code incorrect.": "Wrong code.",
+    "Recevoir mes alertes sur Telegram": "Get my alerts on Telegram",
+    "Les notifications Telegram ne sont pas disponibles sur ce site pour le moment.":
+        "Telegram notifications are not available on this site for now.",
+    "1. Ouvre [@{bot}](https://t.me/{bot}) dans Telegram et appuie sur **Démarrer**.":
+        "1. Open [@{bot}](https://t.me/{bot}) in Telegram and tap **Start**.",
+    "2. Envoie /start à [@userinfobot](https://t.me/userinfobot) : il te répond avec ton identifiant (« Id »).":
+        "2. Send /start to [@userinfobot](https://t.me/userinfobot): it replies with your ID (\"Id\").",
+    "3. Colle ton identifiant ici": "3. Paste your ID here",
+    "Cet identifiant n'est pas valide : c'est un nombre, par exemple 123456789.":
+        "This ID is not valid: it is a number, for example 123456789.",
+    "Envoyer un message de test": "Send a test message",
+    "Message envoyé : regarde ton Telegram.": "Message sent: check your Telegram.",
+    "Ton identifiant n'est gardé que pendant ta visite. Les alertes sont vérifiées quand tu cliques sur « Vérifier maintenant ».":
+        "Your ID is only kept during your visit. Alerts are checked when you click \"Check now\".",
     "active": "active",
     "atteinte": "reached",
     "＋ Nouvelle alerte": "＋ New alert",

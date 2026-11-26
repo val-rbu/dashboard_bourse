@@ -99,6 +99,23 @@ python verificateur.py --boucle       # vérifier les alertes toutes les 5 minut
 
 La base de données `bourse.db` est créée automatiquement au premier lancement.
 
+## Site en ligne : comptes Telegram et alertes automatiques
+
+Sur le site (Streamlit Community Cloud), un visiteur peut **se connecter avec Telegram** :
+il donne son identifiant, le bot lui envoie un code à 6 chiffres, et il le tape. Ensuite :
+- sa liste de suivi, son portefeuille et ses alertes sont gardés dans la base en ligne (Neon, PostgreSQL) ;
+- son navigateur se souvient de lui pendant 90 jours (cookie) ;
+- ses alertes sont vérifiées **toutes les 15 minutes environ** par GitHub Actions (`.github/workflows/alertes.yml`,
+  qui lance `python verificateur.py --en-ligne`), même quand le site est fermé, et il est prévenu sur son Telegram.
+
+Sans connexion, le visiteur utilise une base temporaire, effacée au bout d'une journée.
+
+Secrets à régler :
+- Streamlit (Manage app > Settings > Secrets) : `MODE_EN_LIGNE = "1"`, `DATABASE_URL`, `TELEGRAM_BOT_TOKEN` ;
+- GitHub (Settings > Secrets and variables > Actions) : `DATABASE_URL`, `TELEGRAM_BOT_TOKEN`.
+
+Sur un ordinateur, rien ne change : `bourse.db`, le fichier `.env` et `python verificateur.py --boucle`.
+
 ## Limites connues
 
 - Les alertes ne sont vérifiées que lorsqu'on clique sur « Vérifier les alertes maintenant » ou qu'on laisse tourner `python verificateur.py --boucle` sur l'ordinateur.

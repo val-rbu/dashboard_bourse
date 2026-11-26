@@ -10,14 +10,19 @@ Cinq types d'alertes sont gérés :
 Deux façons de l'utiliser, dans le terminal :
     python verificateur.py             -> une vérification, puis le script s'arrête
     python verificateur.py --boucle    -> une vérification toutes les 5 minutes (Ctrl + C pour arrêter)
+    python verificateur.py --en-ligne  -> vérifie les alertes de TOUS les comptes du site en ligne
+                                          (base Neon, adresse dans la variable DATABASE_URL) ;
+                                          c'est ce que lance GitHub Actions toutes les 15 minutes.
 
 L'interface (app.py) peut aussi l'appeler avec le bouton « Vérifier maintenant ».
 """
 
+import os
 import sys
 import time
 
 import database as db
+import notifications
 import indicateurs as ind
 from data import clotures_5ans, dernier_prix, devise, rapport_volume, variation_jour
 from notifications import envoyer_message, expliquer_erreur, telegram_configure
@@ -191,7 +196,34 @@ def verifier_alertes():
     return declenchees, echecs
 
 
+def verifier_tous_les_comptes(adresse):
+    """Site en ligne : vérifie les alertes de chaque compte et prévient chacun sur SON Telegram."""
+    db.utiliser_postgres(adresse)
+    db.initialiser()
+    db.nettoyer_sessions()
+    comptes = db.utilisateurs_avec_alertes()
+    total_declenchees = total_echecs = 0
+    for utilisateur in comptes:
+        db.utiliser_postgres(adresse, utilisateur)
+        notifications.definir_chat_id_visiteur(utilisateur)   # le message part vers ce compte uniquement
+        try:
+            declenchees, echecs = verifier_alertes()
+        except Exception as erreur:   # un compte en erreur ne bloque pas les autres
+            print(f"   compte ignoré cette fois ({type(erreur).__name__})")
+            continue
+        total_declenchees += len(declenchees)
+        total_echecs += len(echecs)
+    print(f"{len(comptes)} compte(s) vérifié(s) : {total_declenchees} déclenchée(s), {total_echecs} en échec.")
+
+
 if __name__ == "__main__":
+    if "--en-ligne" in sys.argv:
+        adresse = (os.getenv("DATABASE_URL") or "").strip()
+        if not adresse:
+            sys.exit("DATABASE_URL manquante : impossible de joindre la base en ligne.")
+        verifier_tous_les_comptes(adresse)
+        sys.exit(0)
+
     db.initialiser()
 
     if "--boucle" in sys.argv:

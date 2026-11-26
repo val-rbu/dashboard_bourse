@@ -1,0 +1,32 @@
+# Vérification automatique des alertes du site en ligne.
+# GitHub lance verificateur.py toutes les 15 minutes (souvent avec quelques minutes de retard) :
+# il lit les alertes de tous les comptes dans la base Neon et prévient chacun sur son Telegram.
+# Secrets à créer dans GitHub (Settings > Secrets and variables > Actions) : DATABASE_URL, TELEGRAM_BOT_TOKEN.
+name: Vérification des alertes
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:   # bouton « Run workflow » pour lancer une vérification à la main
+
+concurrency:
+  group: verification-alertes
+  cancel-in-progress: false
+
+jobs:
+  verifier:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Installer les paquets
+        run: pip install yfinance pandas numpy python-dotenv requests "psycopg[binary]"
+      - name: Vérifier les alertes de tous les comptes
+        run: python verificateur.py --en-ligne
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}

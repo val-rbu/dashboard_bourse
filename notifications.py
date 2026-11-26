@@ -14,6 +14,7 @@ Commandes utiles, dans le terminal :
 
 import os
 import sys
+import threading
 from pathlib import Path
 
 import requests
@@ -22,6 +23,23 @@ from dotenv import load_dotenv
 FICHIER_ENV = Path(__file__).parent / ".env"
 URL_API = "https://api.telegram.org/bot{token}/{methode}"
 DELAI_SECONDES = 20
+
+
+# Site en ligne : chaque visiteur donne SON identifiant Telegram. Il est rangé « par fil d'exécution » :
+# Streamlit fait tourner chaque visiteur dans son propre fil, donc deux visiteurs ne se mélangent jamais.
+_visiteur = threading.local()
+
+
+def definir_chat_id_visiteur(chat_id):
+    """Site en ligne : les messages iront à cet identifiant (et jamais à TELEGRAM_CHAT_ID du .env).
+
+    Une chaîne vide veut dire « pas d'identifiant » : aucun message n'est envoyé.
+    """
+    _visiteur.chat_id = (chat_id or "").strip()
+
+
+def _mode_visiteur():
+    return getattr(_visiteur, "chat_id", None) is not None
 
 
 class TelegramNonConfigure(Exception):
@@ -36,6 +54,8 @@ def _lire_configuration():
     """Lit le fichier .env (à chaque appel, donc une modification est prise en compte tout de suite)."""
     load_dotenv(FICHIER_ENV, override=True)
     token = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+    if _mode_visiteur():
+        return token, _visiteur.chat_id
     chat_id = (os.getenv("TELEGRAM_CHAT_ID") or "").strip()
     return token, chat_id
 
@@ -73,9 +93,10 @@ def _appeler(token, methode, **parametres):
                 "(copie-le en entier depuis BotFather, sans espace ni guillemets)."
             )
         elif code == 400 and "chat not found" in description.lower():
+            ou = "ton identifiant Telegram" if _mode_visiteur() else "TELEGRAM_CHAT_ID dans le fichier .env"
             message = (
-                "Telegram ne trouve pas la conversation : ouvre ton bot dans Telegram, appuie sur "
-                "Démarrer (ou envoie /start), puis vérifie TELEGRAM_CHAT_ID dans le fichier .env."
+                "Telegram ne trouve pas la conversation : ouvre le bot dans Telegram, appuie sur "
+                f"Démarrer (ou envoie /start), puis vérifie {ou}."
             )
         elif code == 403:
             message = (
@@ -97,6 +118,25 @@ def envoyer_message(texte):
             "Telegram non configuré : il manque TELEGRAM_BOT_TOKEN ou TELEGRAM_CHAT_ID dans le fichier .env."
         )
     _appeler(token, "sendMessage", chat_id=chat_id, text=texte)
+
+
+def envoyer_message_a(chat_id, texte):
+    """Envoie un message à un identifiant précis (sert pour le code de connexion du site)."""
+    token, _ = _lire_configuration()
+    if not token:
+        raise TelegramNonConfigure("Telegram non configuré sur ce site (TELEGRAM_BOT_TOKEN manquant).")
+    _appeler(token, "sendMessage", chat_id=str(chat_id), text=texte)
+
+
+def nom_du_bot():
+    """Nom d'utilisateur du bot (ex. « MonBot »), ou None si le token manque ou est refusé."""
+    token, _ = _lire_configuration()
+    if not token:
+        return None
+    try:
+        return (_appeler(token, "getMe") or {}).get("username")
+    except ErreurTelegram:
+        return None
 
 
 def trouver_chat_id():

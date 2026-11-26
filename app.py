@@ -26,6 +26,7 @@ Fichiers du projet :
 import html
 import os
 import re
+import secrets
 import tempfile
 import time
 import uuid
@@ -52,6 +53,7 @@ import style
 from langue import t
 from data import actualites_brutes, devise, rechercher_actions
 from data import recuperer_cours as _recuperer_cours
+import notifications
 from notifications import telegram_configure
 try:   # champ de recherche avec liste déroulante en direct (paquet facultatif : pip install streamlit-searchbox)
     from streamlit_searchbox import st_searchbox
@@ -91,10 +93,24 @@ if any(_config_streamlit.get_option(f"theme.{cle}") != valeur for cle, valeur in
 
 style.appliquer(st.session_state["mode"])   # couleurs et cartes (palette sombre ou claire)
 
-# Crée la base de données au premier lancement et la met à jour si besoin
-# Mode « en ligne » (secret MODE_EN_LIGNE = "1" sur Streamlit Community Cloud) : chaque visiteur a SA propre base
-# temporaire, pour que les testeurs ne voient pas les données des autres. Elle disparaît au bout d'une journée.
-if os.getenv("MODE_EN_LIGNE") == "1":
+# ---------------------------------------------------------------
+# Base de données et compte du visiteur
+# ---------------------------------------------------------------
+# Sur ton PC : le fichier bourse.db et ton Telegram du fichier .env (comme toujours).
+# Sur le site (secret MODE_EN_LIGNE = "1") :
+#   - un visiteur non connecté a une base temporaire (effacée au bout d'une journée) et pas de Telegram ;
+#   - un visiteur connecté avec Telegram retrouve ses données dans la base Neon (secret DATABASE_URL),
+#     reçoit ses alertes sur SON Telegram, et le navigateur se souvient de lui (cookie).
+EN_LIGNE = os.getenv("MODE_EN_LIGNE") == "1"
+ADRESSE_BASE = (os.getenv("DATABASE_URL") or "").strip()
+COMPTES = EN_LIGNE and bool(ADRESSE_BASE)   # la connexion avec Telegram n'existe qu'en ligne, avec la base Neon
+CHAT_ID_VALIDE = r"-?\d{5,15}"
+NOM_COOKIE = "tb_session"
+DUREE_COOKIE_SECONDES = 90 * 24 * 3600
+
+
+def utiliser_base_invite():
+    """Base temporaire propre à ce visiteur (site en ligne, sans compte)."""
     if "id_visiteur" not in st.session_state:
         st.session_state["id_visiteur"] = uuid.uuid4().hex
         for ancien in Path(tempfile.gettempdir()).glob("bourse_visiteur_*.db"):
@@ -103,16 +119,103 @@ if os.getenv("MODE_EN_LIGNE") == "1":
                     ancien.unlink()
             except OSError:
                 pass
-    db.CHEMIN_BASE = Path(tempfile.gettempdir()) / f"bourse_visiteur_{st.session_state['id_visiteur']}.db"
+    db.utiliser_sqlite(Path(tempfile.gettempdir()) / f"bourse_visiteur_{st.session_state['id_visiteur']}.db")
+    db.initialiser()
+    # La liste de départ est créée une seule fois (même si le premier chargement a été interrompu)
+    if not st.session_state.get("liste_initialisee"):
+        if not db.lister_watchlist():
+            for ticker_depart in db.LISTE_PAR_DEFAUT:
+                db.ajouter_ticker(ticker_depart)
+        st.session_state["liste_initialisee"] = True
 
-db.initialiser()
 
-# En ligne : la liste de départ est créée une seule fois par visiteur (même si le premier chargement est interrompu)
-if os.getenv("MODE_EN_LIGNE") == "1" and not st.session_state.get("liste_initialisee"):
-    if not db.lister_watchlist():
-        for ticker_depart in db.LISTE_PAR_DEFAUT:
-            db.ajouter_ticker(ticker_depart)
-    st.session_state["liste_initialisee"] = True
+def ecrire_cookie(valeur, duree):
+    """Écrit (ou efface, avec duree=0) le cookie de connexion dans le navigateur du visiteur."""
+    st.html(
+        f"<script>document.cookie = '{NOM_COOKIE}={valeur}; path=/; max-age={duree}; SameSite=Lax; Secure';</script>",
+        unsafe_allow_javascript=True,
+    )
+
+
+def connecter(utilisateur):
+    """Connecte le visiteur à son compte. Un compte tout neuf récupère ce qu'il avait fait en invité."""
+    invite = (db.lister_watchlist(), db.lister_alertes(), db.lister_positions())
+    db.utiliser_postgres(ADRESSE_BASE, utilisateur)
+    if db.initialiser():   # compte créé à l'instant : on y recopie la liste, les alertes et le portefeuille
+        liste, alertes_invite, positions_invite = invite
+        for ticker_invite in liste:
+            db.ajouter_ticker(ticker_invite)
+        for a in alertes_invite:
+            db.creer_alerte(a["ticker"], a["sens"], a["seuil"], a["type"])
+        for lot in positions_invite:
+            db.ajouter_position(lot["ticker"], lot["quantite"], lot["prix_achat"])
+    jeton = secrets.token_urlsafe(32)
+    db.creer_session(jeton, utilisateur)
+    st.session_state.update(utilisateur=utilisateur, jeton=jeton, cookie_a_ecrire=jeton, compte_pret=True)
+    st.session_state.pop("code_connexion", None)
+    st.rerun()
+
+
+def deconnecter():
+    """Oublie le compte sur ce navigateur (les données restent dans le compte)."""
+    if st.session_state.get("jeton"):
+        db.supprimer_session(st.session_state["jeton"])
+    for cle in ("utilisateur", "jeton", "compte_pret"):
+        st.session_state.pop(cle, None)
+    st.session_state["cookie_a_effacer"] = True
+    st.rerun()
+
+
+if not EN_LIGNE:
+    db.utiliser_sqlite()   # ton PC : bourse.db
+    db.initialiser()
+else:
+    # Visiteur qui revient : son navigateur a gardé le cookie de connexion
+    if COMPTES and not st.session_state.get("utilisateur") and not st.session_state.get("cookie_lu"):
+        st.session_state["cookie_lu"] = True
+        jeton_cookie = st.context.cookies.get(NOM_COOKIE)
+        if jeton_cookie:
+            try:
+                db.utiliser_postgres(ADRESSE_BASE)
+                db.initialiser()
+                utilisateur_cookie = db.utilisateur_de_session(jeton_cookie)
+                if utilisateur_cookie:
+                    st.session_state.update(utilisateur=utilisateur_cookie, jeton=jeton_cookie)
+            except Exception:
+                pass   # base injoignable : le visiteur continue en invité
+
+    UTILISATEUR = st.session_state.get("utilisateur") if COMPTES else None
+    if UTILISATEUR:
+        try:
+            db.utiliser_postgres(ADRESSE_BASE, UTILISATEUR)
+            if not st.session_state.get("compte_pret"):
+                db.initialiser()
+                st.session_state["compte_pret"] = True
+            notifications.definir_chat_id_visiteur(UTILISATEUR)   # ses alertes partent vers SON Telegram
+        except Exception:
+            st.error(t("La base en ligne ne répond pas : tu es en mode invité pour le moment."))
+            UTILISATEUR = None
+    if not UTILISATEUR:
+        utiliser_base_invite()
+        if COMPTES:
+            notifications.definir_chat_id_visiteur("")   # invité : il faut se connecter pour recevoir des alertes
+        else:
+            _id_saisi = (st.session_state.get("chat_id_visiteur") or "").strip()
+            notifications.definir_chat_id_visiteur(_id_saisi if re.fullmatch(CHAT_ID_VALIDE, _id_saisi) else "")
+
+    # Cookie à écrire (juste connecté) ou à effacer (juste déconnecté)
+    if st.session_state.get("cookie_a_ecrire"):
+        ecrire_cookie(st.session_state.pop("cookie_a_ecrire"), DUREE_COOKIE_SECONDES)
+    if st.session_state.pop("cookie_a_effacer", False):
+        ecrire_cookie("", 0)
+UTILISATEUR = st.session_state.get("utilisateur") if COMPTES else None
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def nom_du_bot():
+    """Nom du bot Telegram du site (gardé une heure)."""
+    return notifications.nom_du_bot()
+
 
 # Pour chaque bouton de période : (durée à récupérer, intervalle entre deux points)
 PERIODES = {
@@ -1132,9 +1235,85 @@ with carte_signaux:
 # Alertes : actives (toutes les actions), dernières déclenchées, création
 # ---------------------------------------------------------------
 with carte_alertes:
+    texte_non_configure = (t("○ Telegram : connecte-toi") if COMPTES else t("○ Telegram : ajoute ton identifiant") if EN_LIGNE
+                           else t("○ Telegram non configuré (fichier .env)"))
     etat_telegram = (f'<span style="color:{style.VERT};font-size:12px">{t("● Telegram connecté")}</span>' if telegram_configure()
-                     else f'<span class="tb-discret">{t("○ Telegram non configuré (fichier .env)")}</span>')
+                     else f'<span class="tb-discret">{texte_non_configure}</span>')
     st.markdown(f'<div class="tb-titre"><h2>{t("Alertes")}</h2>{etat_telegram}</div>', unsafe_allow_html=True)
+
+    # Site en ligne avec la base Neon : connexion avec Telegram (code à 6 chiffres envoyé par le bot)
+    if COMPTES and UTILISATEUR:
+        with st.expander(t("Mon compte Telegram")):
+            st.caption(t("Connecté avec l'identifiant {id}. Tes alertes sont vérifiées automatiquement toutes les "
+                         "15 minutes environ, même quand le site est fermé.", id=UTILISATEUR))
+            if st.button(t("Se déconnecter"), key="deconnexion"):
+                deconnecter()
+    elif COMPTES:
+        with st.expander(t("Se connecter avec Telegram")):
+            bot = nom_du_bot()
+            if not bot:
+                st.caption(t("Les notifications Telegram ne sont pas disponibles sur ce site pour le moment."))
+            else:
+                st.caption(t("Connecte-toi pour retrouver ta liste, ton portefeuille et tes alertes à chaque visite, "
+                             "et recevoir tes alertes automatiquement sur Telegram."))
+                st.markdown(t("1. Ouvre [@{bot}](https://t.me/{bot}) dans Telegram et appuie sur **Démarrer**.", bot=bot))
+                st.markdown(t("2. Envoie /start à [@userinfobot](https://t.me/userinfobot) : il te répond avec ton identifiant (« Id »)."))
+                st.text_input(t("3. Ton identifiant Telegram"), key="id_connexion", placeholder="123456789")
+                id_connexion = (st.session_state.get("id_connexion") or "").strip()
+                if id_connexion and not re.fullmatch(CHAT_ID_VALIDE, id_connexion):
+                    st.warning(t("Cet identifiant n'est pas valide : c'est un nombre, par exemple 123456789."))
+                elif id_connexion and st.button(t("Recevoir un code"), key="envoyer_code"):
+                    if time.time() - st.session_state.get("code_envoye_a", 0) < 30:
+                        st.warning(t("Patiente 30 secondes avant de redemander un code."))
+                    else:
+                        code = f"{secrets.randbelow(10 ** 6):06d}"
+                        try:
+                            notifications.envoyer_message_a(
+                                id_connexion, f"Ton code de connexion au tableau de bord : {code}\n(valable 10 minutes)"
+                            )
+                            st.session_state["code_connexion"] = {
+                                "id": id_connexion, "code": code, "expire": time.time() + 600, "essais": 0,
+                            }
+                            st.session_state["code_envoye_a"] = time.time()
+                            st.success(t("Code envoyé : regarde ton Telegram."))
+                        except Exception as erreur:
+                            st.error(notifications.expliquer_erreur(erreur))
+                attente = st.session_state.get("code_connexion")
+                if attente and attente["id"] == id_connexion:
+                    st.text_input(t("4. Code reçu sur Telegram"), key="code_saisi", max_chars=6, placeholder="000000")
+                    if st.button(t("Me connecter"), key="valider_code", type="primary"):
+                        saisi = (st.session_state.get("code_saisi") or "").strip()
+                        if time.time() > attente["expire"] or attente["essais"] >= 5:
+                            st.session_state.pop("code_connexion", None)
+                            st.error(t("Ce code n'est plus valable : demande un nouveau code."))
+                        elif saisi == attente["code"]:
+                            connecter(id_connexion)
+                        else:
+                            attente["essais"] += 1
+                            st.error(t("Code incorrect."))
+    # Site en ligne sans base Neon : le visiteur colle son identifiant pour la durée de sa visite
+    elif EN_LIGNE:
+        with st.expander(t("Recevoir mes alertes sur Telegram")):
+            bot = nom_du_bot()
+            if not bot:
+                st.caption(t("Les notifications Telegram ne sont pas disponibles sur ce site pour le moment."))
+            else:
+                st.markdown(t("1. Ouvre [@{bot}](https://t.me/{bot}) dans Telegram et appuie sur **Démarrer**.", bot=bot))
+                st.markdown(t("2. Envoie /start à [@userinfobot](https://t.me/userinfobot) : il te répond avec ton identifiant (« Id »)."))
+                st.text_input(t("3. Colle ton identifiant ici"), key="chat_id_visiteur", placeholder="123456789")
+                id_saisi = (st.session_state.get("chat_id_visiteur") or "").strip()
+                if id_saisi and not re.fullmatch(CHAT_ID_VALIDE, id_saisi):
+                    st.warning(t("Cet identifiant n'est pas valide : c'est un nombre, par exemple 123456789."))
+                elif id_saisi and st.button(t("Envoyer un message de test"), key="test_telegram"):
+                    try:
+                        notifications.envoyer_message(
+                            "Test du tableau de bord financier : tu recevras ici tes alertes."
+                        )
+                        st.success(t("Message envoyé : regarde ton Telegram."))
+                    except Exception as erreur:
+                        st.error(notifications.expliquer_erreur(erreur))
+                st.caption(t("Ton identifiant n'est gardé que pendant ta visite. Les alertes sont vérifiées "
+                             "quand tu cliques sur « Vérifier maintenant »."))
     alertes = db.lister_alertes()
     historique_alertes = db.lister_historique()
     if not alertes and not historique_alertes:
