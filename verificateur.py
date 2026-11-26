@@ -22,12 +22,37 @@ import sys
 import time
 
 import database as db
+import devises
 import notifications
 import indicateurs as ind
-from data import clotures_5ans, dernier_prix, devise, rapport_volume, variation_jour
+from data import clotures_5ans, dernier_prix, devise, rapport_volume, recuperer_cours, variation_jour
 from notifications import envoyer_message, expliquer_erreur, telegram_configure
 
 INTERVALLE_SECONDES = 5 * 60   # temps d'attente entre deux vérifications en mode boucle
+
+
+def devise_alerte(alerte):
+    """Devise du seuil d'une alerte de prix : celle choisie à la création, sinon la devise de cotation."""
+    return alerte.get("devise") or devise(alerte["ticker"])
+
+
+def devise_mesure(alerte):
+    """Devise du cours mesuré : celle du seuil pour une alerte de prix, sinon la devise de cotation."""
+    return devise_alerte(alerte) if alerte["type"] == "prix" else devise(alerte["ticker"])
+
+
+def taux_de_change(memoire):
+    """Taux du jour {symbole: unités pour 1 $}, téléchargés une seule fois par vérification."""
+    if "taux" not in memoire:
+        taux = {}
+        for symbole, symbole_yahoo in devises.symboles_yahoo().items():
+            for periode, intervalle in (("1d", "1m"), ("5d", "1d")):
+                donnees = recuperer_cours(symbole_yahoo, periode, intervalle)
+                if not donnees.empty and donnees["Close"].dropna().size:
+                    taux[symbole] = float(donnees["Close"].dropna().iloc[-1])
+                    break
+        memoire["taux"] = taux
+    return memoire["taux"]
 
 
 def libelle_condition(alerte):
@@ -42,7 +67,7 @@ def libelle_condition(alerte):
         return f"RSI {signe} {alerte['seuil']:.0f}"
     if alerte["type"] == "variation_jour":
         return f"variation du jour {signe} {'+' if hausse else '−'}{alerte['seuil']:.1f} %"
-    return f"{signe} {alerte['seuil']:.2f} {devise(alerte['ticker'])}"
+    return f"{signe} {alerte['seuil']:.2f} {devise_alerte(alerte)}"
 
 
 def mesurer(alerte, memoire):
@@ -95,6 +120,13 @@ def mesurer(alerte, memoire):
     prix = memoire[cle]
     if prix is None:
         return None
+    # Seuil saisi dans une autre devise que celle de cotation : on convertit le cours au taux du jour
+    d_cotation, d_seuil = devise(ticker), devise_alerte(alerte)
+    if d_seuil != d_cotation:
+        taux = taux_de_change(memoire)
+        if (d_seuil != "$" and d_seuil not in taux) or (d_cotation != "$" and d_cotation not in taux):
+            return None   # taux indisponible : on réessaiera à la prochaine vérification
+        prix = prix * devises.facteur(d_cotation, d_seuil, taux)
     return {"cours": prix, "variation": None}
 
 
@@ -117,7 +149,7 @@ def condition_remplie(alerte, mesure):
 def decrire(alerte, mesure):
     """Phrase lisible décrivant une alerte déclenchée."""
     ticker = alerte["ticker"]
-    d = devise(ticker)
+    d = devise_mesure(alerte)
     if alerte["type"] == "volume_anormal":
         return (
             f"{ticker} : {libelle_condition(alerte)} atteint "
@@ -188,7 +220,7 @@ def verifier_alertes():
         if condition_remplie(alerte, mesure):
             reussi, information = notifier(alerte, mesure)
             if reussi:
-                db.declencher_alerte(alerte, mesure["cours"], mesure["variation"])
+                db.declencher_alerte(alerte, mesure["cours"], mesure["variation"], devise_mesure(alerte))
                 declenchees.append((alerte, mesure, information))
             else:
                 echecs.append((alerte, mesure, information))

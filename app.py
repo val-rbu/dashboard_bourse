@@ -60,7 +60,7 @@ try:   # champ de recherche avec liste déroulante en direct (paquet facultatif 
 except ImportError:
     st_searchbox = None
 
-from verificateur import condition_remplie, decrire, libelle_condition, mesurer, verifier_alertes
+from verificateur import condition_remplie, decrire, devise_alerte, devise_mesure, libelle_condition, mesurer, verifier_alertes
 
 # Streamlit relit app.py à chaque modification, mais pas toujours les fichiers qu'il importe :
 # on recharge ces fichiers-là pour que les changements d'apparence et de devises soient pris en compte.
@@ -146,7 +146,7 @@ def connecter(utilisateur):
         for ticker_invite in liste:
             db.ajouter_ticker(ticker_invite)
         for a in alertes_invite:
-            db.creer_alerte(a["ticker"], a["sens"], a["seuil"], a["type"])
+            db.creer_alerte(a["ticker"], a["sens"], a["seuil"], a["type"], a.get("devise"))
         for lot in positions_invite:
             db.ajouter_position(lot["ticker"], lot["quantite"], lot["prix_achat"])
     jeton = secrets.token_urlsafe(32)
@@ -288,12 +288,12 @@ def choix_boutons(label, options, defaut, cle, visible=False):
 
 def libelle(alerte):
     """Condition d'une alerte, dans la langue de l'interface."""
-    return langue.libelle_condition(alerte, devise(alerte["ticker"]))
+    return langue.libelle_condition(alerte, devise_alerte(alerte))
 
 
 def decrire_alerte(alerte, mesure):
     """Description d'une alerte déclenchée, dans la langue de l'interface."""
-    return langue.decrire(alerte, mesure, devise(alerte["ticker"]))
+    return langue.decrire(alerte, mesure, devise_mesure(alerte))
 
 
 # ---------------------------------------------------------------
@@ -1129,11 +1129,14 @@ if avec_macd:
 for alerte in db.lister_alertes(choix):
     if alerte["type"] == "prix":
         signe = "≥" if alerte["sens"] == "hausse" else "≤"
+        d_seuil = devise_alerte(alerte)
+        d_graphique = cible if cible is not None else devise(choix)
+        taux_ligne = taux if d_seuil == "$" or d_seuil in taux else taux_du_jour()
         fig.add_hline(
-            y=alerte["seuil"] * facteur_vers_cible(choix),   # ligne placée dans la devise d'affichage
+            y=alerte["seuil"] * devises.facteur(d_seuil, d_graphique, taux_ligne),   # ligne placée dans la devise d'affichage
             line_dash="dash",
             line_color=style.JAUNE,
-            annotation_text=t("Seuil d'alerte {signe} {x:.2f} {d}", signe=signe, x=alerte["seuil"], d=symbole),
+            annotation_text=t("Seuil d'alerte {signe} {x:.2f} {d}", signe=signe, x=alerte["seuil"], d=d_seuil),
             annotation_position="top right",
             annotation_font_color=style.JAUNE,
             row=1,
@@ -1343,8 +1346,8 @@ with carte_alertes:
 
     with st.popover(t("＋ Nouvelle alerte"), type="primary", width="stretch", key="pop_alerte"):
         st.markdown(f"**{t('Nouvelle alerte sur {ticker}', ticker=choix)}**")
-        if cible is not None and cible != symbole:
-            st.caption(t("Les alertes de prix restent exprimées en {d}, la devise de cotation de {ticker}.", d=symbole, ticker=choix))
+        devise_seuil = cible if cible is not None else symbole   # le seuil se saisit dans la devise affichée
+        dernier_seuil = float(dernier) * facteur_vers_cible(choix)
         type_choisi = st.radio(
             t("Type d'alerte"), ["Prix", "Variation du jour (%)", "RSI", "Croisement MA50/MA200", "Volume anormal"], format_func=t
         )
@@ -1375,7 +1378,7 @@ with carte_alertes:
             sens_choisi = st.radio(t("Prévenez-moi quand le cours est"), ["au-dessus de", "en dessous de"], horizontal=True, format_func=t)
             sens = "hausse" if sens_choisi == "au-dessus de" else "baisse"
             seuil = st.number_input(
-                t("Seuil ({d})", d=symbole), min_value=0.01, value=round(float(dernier), 2), step=1.0, format="%.2f"
+                t("Seuil ({d})", d=devise_seuil), min_value=0.01, value=round(dernier_seuil, 2), step=1.0, format="%.2f"
             )
         else:
             type_alerte = "variation_jour"
@@ -1384,12 +1387,12 @@ with carte_alertes:
             seuil = st.number_input(t("Variation sur la journée (%)"), min_value=0.1, value=5.0, step=0.1, format="%.1f")
 
         if st.button(t("Créer l'alerte"), type="primary"):
-            db.creer_alerte(choix, sens, float(seuil), type_alerte)
+            db.creer_alerte(choix, sens, float(seuil), type_alerte, devise_seuil if type_alerte == "prix" else None)
             ajouter_message("success", t("Alerte créée sur {ticker}.", ticker=choix))
 
             # On prévient si la condition est déjà vraie : l'alerte partira à la prochaine vérification
             if type_alerte == "prix":
-                deja_franchi = (dernier >= seuil) if sens == "hausse" else (dernier <= seuil)
+                deja_franchi = (dernier_seuil >= seuil) if sens == "hausse" else (dernier_seuil <= seuil)
             elif type_alerte in ("rsi", "croisement_ma", "volume_anormal"):
                 nouvelle = {"ticker": choix, "type": type_alerte, "sens": sens, "seuil": float(seuil)}
                 mesure_actuelle = mesurer(nouvelle, {})
@@ -1430,7 +1433,7 @@ with carte_alertes:
                         t("Date"): h["date_declenchement"],
                         t("Action"): h["ticker"],
                         t("Condition"): libelle(h),
-                        t("Cours au déclenchement"): f"{h['cours']:.2f} {devise(h['ticker'])}"
+                        t("Cours au déclenchement"): f"{h['cours']:.2f} {h.get('devise') or devise(h['ticker'])}"
                         + (f" ({h['variation']:+.2f} %)" if h["variation"] is not None else ""),
                     }
                     for h in historique_alertes[:5]   # les 5 plus récentes ; le CSV contient tout l'historique
@@ -1443,8 +1446,8 @@ with carte_alertes:
                 export.vers_csv(
                     [
                         {
-                            "Date": h["date_declenchement"], "Action": h["ticker"], "Condition": libelle_condition(h),
-                            "Cours": h["cours"], "Variation du jour (%)": h["variation"],
+                            "Date": h["date_declenchement"], "Action": h["ticker"], "Condition": libelle(h),
+                            "Cours": h["cours"], "Devise": h.get("devise") or devise(h["ticker"]), "Variation du jour (%)": h["variation"],
                         }
                         for h in historique_alertes
                     ]

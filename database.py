@@ -167,7 +167,8 @@ TABLES_POSTGRES = [
         seuil         DOUBLE PRECISION NOT NULL,
         active        INTEGER NOT NULL DEFAULT 1,
         date_creation TEXT NOT NULL,
-        type          TEXT NOT NULL DEFAULT 'prix')""",
+        type          TEXT NOT NULL DEFAULT 'prix',
+        devise        TEXT)""",
     """CREATE TABLE IF NOT EXISTS historique_alertes (
         id                 SERIAL PRIMARY KEY,
         utilisateur        TEXT NOT NULL,
@@ -178,7 +179,8 @@ TABLES_POSTGRES = [
         cours              DOUBLE PRECISION NOT NULL,
         date_declenchement TEXT NOT NULL,
         type               TEXT NOT NULL DEFAULT 'prix',
-        variation          DOUBLE PRECISION)""",
+        variation          DOUBLE PRECISION,
+        devise             TEXT)""",
     """CREATE TABLE IF NOT EXISTS positions (
         id          SERIAL PRIMARY KEY,
         utilisateur TEXT NOT NULL,
@@ -187,6 +189,9 @@ TABLES_POSTGRES = [
         prix_achat  DOUBLE PRECISION NOT NULL,
         date_achat  TEXT NOT NULL)""",
     "CREATE INDEX IF NOT EXISTS alertes_utilisateur ON alertes (utilisateur, active)",
+    # Mise à jour d'une base créée avant l'ajout de la devise des alertes
+    "ALTER TABLE alertes ADD COLUMN IF NOT EXISTS devise TEXT",
+    "ALTER TABLE historique_alertes ADD COLUMN IF NOT EXISTS devise TEXT",
 ]
 
 
@@ -246,6 +251,9 @@ def initialiser():
         _ajouter_colonne_si_absente(conn, "alertes", "type", "TEXT NOT NULL DEFAULT 'prix'")
         _ajouter_colonne_si_absente(conn, "historique_alertes", "type", "TEXT NOT NULL DEFAULT 'prix'")
         _ajouter_colonne_si_absente(conn, "historique_alertes", "variation", "REAL")
+        # devise du seuil (alertes de prix) et du cours enregistré ; vide = devise de cotation de l'action
+        _ajouter_colonne_si_absente(conn, "alertes", "devise", "TEXT")
+        _ajouter_colonne_si_absente(conn, "historique_alertes", "devise", "TEXT")
 
         if premiere_fois:
             conn.executemany(
@@ -315,10 +323,12 @@ def retirer_ticker(ticker):
 # ---------------------------------------------------------------
 # Alertes
 # ---------------------------------------------------------------
-def creer_alerte(ticker, sens, seuil, type_alerte="prix"):
+def creer_alerte(ticker, sens, seuil, type_alerte="prix", devise=None):
+    """devise = symbole de la devise du seuil (ex. « € ») pour une alerte de prix ; None = devise de cotation."""
     with _connexion() as conn:
         _inserer(conn, "alertes", {
             "ticker": ticker, "sens": sens, "seuil": seuil, "date_creation": maintenant(), "type": type_alerte,
+            "devise": devise,
         })
 
 
@@ -340,13 +350,14 @@ def supprimer_alerte(alerte_id):
         conn.execute(f"DELETE FROM alertes WHERE id = ? AND {condition}", (alerte_id, *parametres))
 
 
-def declencher_alerte(alerte, cours, variation=None):
+def declencher_alerte(alerte, cours, variation=None, devise=None):
     """Désactive l'alerte (elle ne se déclenche qu'une fois) et l'écrit dans l'historique."""
     with _connexion() as conn:
         conn.execute("UPDATE alertes SET active = 0 WHERE id = ?", (alerte["id"],))
         _inserer(conn, "historique_alertes", {
             "alerte_id": alerte["id"], "ticker": alerte["ticker"], "sens": alerte["sens"], "seuil": alerte["seuil"],
             "cours": cours, "date_declenchement": maintenant(), "type": alerte["type"], "variation": variation,
+            "devise": devise,
         })
 
 
